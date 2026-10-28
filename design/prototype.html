@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a100f">
+<title>听澜 · 界面设计方案 v5</title>
+<style>
+/* ───────────────────────── 1. 设计令牌 ───────────────────────── */
+:root{
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Inter, system-ui, sans-serif;
+
+  /* 字号阶梯：13 / 15 / 17 / 20 / 26 / 34。
+     正文与说明文字下限 13px；仅品牌署名与角标允许 11–12px，不用于可读内容。 */
+  --fs-meta: 13px;
+  --fs-body: 15px;
+  --fs-lg: 17px;
+  --fs-h3: 20px;
+  --fs-h2: 26px;
+  --fs-h1: 34px;
+
+  /* 间距：4px 基准 */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+
+  /* 圆角 */
+  --r-sm: 12px; --r-md: 16px; --r-lg: 22px; --r-xl: 28px; --r-pill: 999px;
+
+  /* 触控与动效 */
+  --tap: 44px;
+  --ease: cubic-bezier(.22,.61,.36,1);
+  --dur-fast: 140ms;
+  --dur: 240ms;
+  --dur-slow: 420ms;
+}
+
+/* 夜航（默认）：为睡前昏暗环境设计，避免大面积高亮度 */
+[data-theme="night"]{
+  --bg: #0a100f;
+  --bg-glow: radial-gradient(120% 80% at 50% -10%, #1b2f2b 0%, #0a100f 62%);
+  --surface: #111a19;
+  --surface-2: #16211f;
+  --surface-3: #1c2926;
+  --line: rgba(233, 240, 237, .09);
+  --line-strong: rgba(233, 240, 237, .16);
+  --text: #e9f0ed;
+  --text-2: #a3b6b1;
+  --text-3: #7d918c;
+  --accent: #f2b880;          /* 暖琥珀：低蓝光，作为主操作 */
+  --accent-rgb: 242 184 128;  /* 供半透明光晕/渐变复用，避免硬编码 */
+  --accent-ink: #241708;      /* 琥珀上的文字 */
+  --accent-soft: rgba(242, 184, 128, .14);
+  --teal: #5cc9bd;
+  --danger: #e79084;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.3);
+  --shadow-2: 0 12px 32px -12px rgba(0,0,0,.6);
+  --orb: radial-gradient(circle at 34% 28%, #ffd7ad 0%, #f2b880 46%, #d18f52 100%);
+  --orb-glow: 0 0 0 1px rgba(255,255,255,.06), 0 18px 46px -14px rgb(242 184 128 / .55);
+  color-scheme: dark;
+}
+
+/* 日间：同一套结构，降低饱和、提高纸感 */
+[data-theme="day"]{
+  --bg: #f5f1e8;
+  --bg-glow: radial-gradient(120% 80% at 50% -10%, #fdf8ee 0%, #f5f1e8 60%);
+  --surface: #fffdf9;
+  --surface-2: #fbf6ec;
+  --surface-3: #f3ecdf;
+  --line: rgba(34, 49, 46, .10);
+  --line-strong: rgba(34, 49, 46, .18);
+  --text: #1e2b28;
+  --text-2: #51625e;
+  --text-3: #5b6d68;
+  --accent: #8a5a20;
+  --accent-rgb: 138 90 32;
+  --accent-ink: #fffdf9;
+  --accent-soft: rgba(138, 90, 32, .10);
+  --teal: #16746c;
+  --danger: #a8412f;
+  --shadow-1: 0 1px 2px rgba(60,50,35,.06);
+  --shadow-2: 0 12px 30px -14px rgba(60,50,35,.22);
+  --orb: radial-gradient(circle at 34% 28%, #c98945 0%, #a2682a 48%, #7d4d1b 100%);
+  --orb-glow: 0 0 0 1px rgba(255,255,255,.5), 0 16px 34px -12px rgb(138 90 32 / .45);
+  color-scheme: light;
+}
+
+/* ───────────────────────── 2. 基础 ───────────────────────── */
+*{ box-sizing: border-box; }
+html,body{ margin:0; padding:0; }
+body{
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg-glow), var(--bg);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100dvh;
+}
+h1,h2,h3,p{ margin:0; }
+button{ font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+ul{ margin:0; padding:0; list-style:none; }
+:focus-visible{ outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 6px; }
+
+.sr{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
+}
+
+/* ───────────────────────── 3. 骨架 ───────────────────────── */
+.shell{
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100dvh;
+}
+.topbar{
+  display:flex; align-items:center; gap: var(--s3);
+  padding: max(env(safe-area-inset-top), 14px) var(--s4) var(--s2);
+}
+.brand{ display:flex; align-items:center; gap:10px; min-width:0; }
+.brand-logo{
+  width: 34px; height: 34px; border-radius: 11px; flex: none;
+  background: linear-gradient(150deg, #2f5f58, #16302c);
+  display:grid; place-items:center;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+.brand-logo svg{ width: 20px; height: 20px; display:block; }
+.brand-name{ font-size: var(--fs-lg); font-weight: 600; letter-spacing: -.01em; line-height:1.2; }
+.brand-name small{ display:block; font-size: 11px; font-weight: 500; color: var(--text-3); letter-spacing:.16em; }
+.topbar-actions{ margin-left:auto; display:flex; align-items:center; gap: var(--s2); }
+
+.icon-btn{
+  width: var(--tap); height: var(--tap);
+  display:grid; place-items:center;
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.icon-btn:hover{ background: var(--surface-2); color: var(--text); }
+.icon-btn svg{ width: 20px; height: 20px; }
+
+main{ padding: 0 var(--s4) calc(96px + env(safe-area-inset-bottom)); }
+.view[hidden]{ display:none; }
+
+/* 桌面端：侧栏导航取代底部 tab（移动端习惯不跨端硬套） */
+.sidenav{ display:none; }
+
+/* ───────────────────────── 4. 通用组件 ───────────────────────── */
+.card{
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+.section{ margin-top: var(--s5); }
+.section-head{
+  display:flex; align-items:baseline; gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.section-head h2{ font-size: var(--fs-h3); font-weight: 600; letter-spacing: -.01em; }
+.section-head .hint{ margin-left:auto; font-size: var(--fs-meta); color: var(--text-3); }
+
+.btn{
+  min-height: var(--tap);
+  padding: 0 var(--s4);
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-body); font-weight: 500;
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.btn:hover{ background: var(--surface-2); }
+.btn:active{ transform: scale(.975); }
+.btn svg{ width:18px; height:18px; }
+.btn-accent{ background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.btn-accent:hover{ filter: brightness(1.06); background: var(--accent); }
+.btn-ghost{ border-color: transparent; color: var(--text-2); }
+.btn-ghost:hover{ color: var(--text); }
+.btn-block{ width: 100%; }
+
+.chip{
+  min-height: var(--tap);
+  padding: 0 var(--s4);
+  display:inline-flex; align-items:center; gap:8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font-size: var(--fs-meta); font-weight: 500;
+  white-space: nowrap;
+  transition: all var(--dur-fast) var(--ease);
+}
+.chip:hover{ color: var(--text); background: var(--surface-2); }
+.chip[aria-pressed="true"]{
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ───────────────────────── 5. 今晚：单任务主控 ───────────────────────── */
+.tonight{ padding-top: var(--s3); text-align: center; }
+.tonight-eyebrow{
+  font-size: var(--fs-meta); color: var(--text-3);
+  letter-spacing: .04em;
+}
+.tonight h1{
+  margin-top: 6px;
+  font-size: clamp(26px, 7.4vw, var(--fs-h1));
+  font-weight: 600;
+  letter-spacing: -.025em;
+  line-height: 1.15;
+}
+.tonight-tracks{
+  margin-top: 6px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* 主播放球：整个页面的唯一视觉焦点 */
+.orb-wrap{
+  position: relative;
+  margin: var(--s6) auto var(--s4);
+  width: 168px; height: 168px;
+  display: grid; place-items: center;
+}
+.orb-wrap::before{
+  content:"";
+  position:absolute; inset: -18%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(var(--accent-rgb) / .22), transparent 68%);
+  opacity: .8;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+.orb{
+  position: relative;
+  width: 128px; height: 128px;
+  border-radius: 50%;
+  background: var(--orb);
+  color: var(--accent-ink);
+  box-shadow: var(--orb-glow);
+  display: grid; place-items: center;
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.orb:hover{ transform: scale(1.03); }
+.orb:active{ transform: scale(.97); }
+.orb svg{ width: 44px; height: 44px; }
+.orb-ring{
+  position:absolute; inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+/* 播放中：呼吸环，尊重减少动效偏好 */
+.playing .orb-ring{ animation: breathe 4.2s var(--ease) infinite; }
+.playing .orb-wrap::before{ opacity: 1; }
+@keyframes breathe{
+  0%{ transform: scale(1); opacity:.5 }
+  70%{ transform: scale(1.42); opacity:0 }
+  100%{ transform: scale(1.42); opacity:0 }
+}
+
+.orb-label{
+  margin-top: var(--s1);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: .02em;
+}
+.tonight-meta{
+  margin-top: var(--s2);
+  display:flex; justify-content:center; gap: var(--s3);
+  font-size: var(--fs-meta); color: var(--text-3);
+  flex-wrap: wrap;
+}
+.tonight-meta span{ display:inline-flex; align-items:center; gap:5px; }
+.dot-sep{ display:inline-block; width:3px; height:3px; border-radius:50%; background: currentColor; opacity:.5; }
+
+/* 波形：静态即示意，播放时流动 */
+.wave{
+  display:flex; align-items:center; justify-content:center;
+  gap: 4px;
+  height: 56px;
+  margin: var(--s5) 0 var(--s2);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.wave i{
+  display:block;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), rgb(var(--accent-rgb) / .16));
+  height: calc(var(--h) * 1%);
+  opacity:.55;
+  transition: opacity var(--dur) var(--ease), height var(--dur-slow) var(--ease);
+}
+.playing .wave i{ opacity:.95; animation: sway 2.4s var(--ease) infinite alternate; animation-delay: calc(var(--i) * -37ms); }
+@keyframes sway{
+  from{ height: calc(var(--h) * 1%) }
+  to{ height: calc(var(--h) * 0.42%) }
+}
+
+/* 音量卡：把「数字增益」翻译成可理解的听感词 */
+.volume-card{ padding: var(--s4); margin-top: var(--s4); text-align:left; }
+.volume-row{ display:flex; align-items:baseline; gap: var(--s2); }
+.volume-row strong{ font-size: var(--fs-lg); font-weight: 600; }
+.volume-row .level{ margin-left:auto; font-size: var(--fs-meta); color: var(--accent); font-weight: 600; }
+.volume-hint{ margin-top: 2px; font-size: var(--fs-meta); color: var(--text-3); }
+
+input[type="range"]{
+  -webkit-appearance: none; appearance:none;
+  width: 100%; height: var(--tap);         /* 44px 命中区，而非 16px */
+  margin: var(--s1) 0 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track{
+  height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent) var(--fill,18%), var(--surface-3) var(--fill,18%));
+}
+input[type="range"]::-moz-range-track{
+  height: 6px; border-radius: 3px; background: var(--surface-3);
+}
+input[type="range"]::-moz-range-progress{
+  height: 6px; border-radius: 3px; background: var(--accent);
+}
+input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none;
+  width: 26px; height: 26px; margin-top: -10px;
+  border-radius: 50%; background: #fffdf9;
+  border: 3px solid var(--accent);
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+}
+input[type="range"]::-moz-range-thumb{
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #fffdf9; border: 3px solid var(--accent);
+}
+
+/* 折叠区：高级设置不抢首屏 */
+details.more{
+  margin-top: var(--s4);
+  border-top: 1px solid var(--line);
+}
+details.more summary{
+  min-height: var(--tap);
+  display:flex; align-items:center; gap:8px;
+  font-size: var(--fs-meta); color: var(--text-2);
+  cursor: pointer; list-style: none;
+}
+details.more summary::-webkit-details-marker{ display:none; }
+details.more summary svg{ width:16px; height:16px; transition: transform var(--dur) var(--ease); }
+details.more[open] summary svg{ transform: rotate(180deg); }
+.field-grid{ display:grid; grid-template-columns: 1fr 1fr; gap: var(--s3); padding-bottom: var(--s2); }
+.field{ display:grid; gap:6px; }
+.field label{ font-size: var(--fs-meta); color: var(--text-3); }
+select{
+  min-height: var(--tap);
+  width: 100%;
+  padding: 0 var(--s3);
+  font: inherit; font-size: var(--fs-body);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237d918c' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+/* 安全说明：产品红线，用恰当权重呈现而非灰色小字淹没 */
+.safety{
+  margin-top: var(--s4);
+  display:flex; gap:10px;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  border: 1px solid rgb(var(--accent-rgb) / .26);
+  text-align:left;
+}
+.safety svg{ width:18px; height:18px; flex:none; margin-top:2px; color: var(--accent); }
+.safety p{ font-size: var(--fs-meta); color: var(--text-2); line-height:1.55; }
+.safety strong{ color: var(--text); font-weight:600; }
+
+/* ───────────────────────── 6. 预设 ───────────────────────── */
+.search{
+  display:flex; align-items:center; gap:10px;
+  min-height: var(--tap);
+  padding: 0 var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  margin-top: var(--s2);
+}
+.search svg{ width:18px; height:18px; color: var(--text-3); flex:none; }
+.search input{
+  flex:1; min-width:0; border:none; background:none; outline:none;
+  font: inherit; color: var(--text); height: 44px;
+}
+.search input::placeholder{ color: var(--text-3); }
+.chips{ display:flex; gap: var(--s2); overflow-x:auto; padding: var(--s3) 0; scrollbar-width:none; }
+.chips::-webkit-scrollbar{ display:none; }
+
+.feature{
+  position: relative;
+  overflow: hidden;
+  padding: var(--s5);
+  border-radius: var(--r-xl);
+  background: linear-gradient(150deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--line);
+  margin-top: var(--s2);
+}
+.feature::after{
+  content:"";
+  position:absolute; right:-40px; top:-60px;
+  width: 220px; height: 220px; border-radius:50%;
+  background: radial-gradient(circle, var(--accent-soft), transparent 70%);
+}
+.feature .eyebrow{
+  font-size: var(--fs-meta); color: var(--accent); font-weight:600; letter-spacing:.03em;
+}
+.feature h2{ margin-top: var(--s2); font-size: var(--fs-h2); font-weight:600; letter-spacing:-.02em; line-height:1.25; }
+.feature p{ margin-top: var(--s2); font-size: var(--fs-meta); color: var(--text-2); max-width: 30ch; }
+.feature .btn{ margin-top: var(--s4); position: relative; z-index:1; }
+
+.grid{ display:grid; gap: var(--s3); grid-template-columns: 1fr 1fr; margin-top: var(--s3); }
+.preset{
+  position: relative;
+  padding: var(--s4);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  text-align:left;
+  min-height: 116px;
+  display:flex; flex-direction:column; gap:4px;
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.preset:hover{ transform: translateY(-2px); border-color: var(--line-strong); background: var(--surface-2); }
+.preset .p-icon{
+  width: 34px; height:34px; border-radius: 11px;
+  display:grid; place-items:center;
+  background: var(--accent-soft); color: var(--accent);
+  margin-bottom: 6px;
+}
+.preset .p-icon svg{ width:18px; height:18px; }
+.preset strong{ font-size: var(--fs-body); font-weight: 600; letter-spacing: -.01em; }
+.preset span{ font-size: var(--fs-meta); color: var(--text-3); line-height:1.45; }
+.preset .p-tag{
+  position:absolute; right: var(--s3); top: var(--s3);
+  font-size: 11px; letter-spacing:.04em;
+  color: var(--text-3);
+  border:1px solid var(--line); border-radius: var(--r-pill);
+  padding: 2px 8px;
+}
+
+/* ───────────────────────── 7. 记录 ───────────────────────── */
+.segmented{
+  display:flex; gap: 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  margin-top: var(--s2);
+}
+.segmented button{
+  flex:1;
+  min-height: 44px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-meta); font-weight: 500;
+  color: var(--text-2);
+  transition: all var(--dur-fast) var(--ease);
+}
+.segmented button[aria-selected="true"]{
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.stat-row{ display:grid; grid-template-columns: repeat(3,1fr); gap: var(--s3); margin-top: var(--s4); }
+.stat{
+  padding: var(--s4) var(--s3);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  text-align:center;
+}
+.stat span{ display:block; font-size: var(--fs-meta); color: var(--text-3); }
+.stat strong{ display:block; margin-top: 4px; font-size: var(--fs-h3); font-weight:600; letter-spacing:-.02em; }
+.stat strong small{ font-size: var(--fs-meta); font-weight:500; color: var(--text-3); margin-left:2px; }
+
+.chart-card{ padding: var(--s4); margin-top: var(--s3); }
+.chart-head{ display:flex; align-items:baseline; margin-bottom: var(--s2); }
+.chart-head h3{ font-size: var(--fs-body); font-weight:600; }
+.chart-head span{ margin-left:auto; font-size: var(--fs-meta); color: var(--text-3); }
+#chart{ width:100%; height: 150px; display:block; }
+
+.log{ margin-top: var(--s2); }
+.log li{
+  display:flex; align-items:center; gap: var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.log li:last-child{ border-bottom:none; }
+.log .l-icon{
+  width: 38px; height:38px; border-radius: 12px; flex:none;
+  display:grid; place-items:center;
+  background: var(--surface-2); color: var(--text-2);
+}
+.log .l-icon svg{ width:18px; height:18px; }
+.log .l-main{ min-width:0; flex:1; }
+.log .l-main strong{ display:block; font-size: var(--fs-body); font-weight:500; }
+.log .l-main span{ font-size: var(--fs-meta); color: var(--text-3); }
+.log .l-val{ font-size: var(--fs-meta); color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+/* ───────────────────────── 8. 我的 ───────────────────────── */
+.profile{
+  display:flex; align-items:center; gap: var(--s3);
+  padding: var(--s4);
+  margin-top: var(--s2);
+}
+.avatar{
+  width: 54px; height:54px; border-radius: 18px; flex:none;
+  background: linear-gradient(150deg, #2f5f58, #16302c);
+  display:grid; place-items:center;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+.avatar svg{ width: 26px; height:26px; }
+.profile h2{ font-size: var(--fs-lg); font-weight:600; }
+.profile p{ font-size: var(--fs-meta); color: var(--text-3); }
+
+.menu{ margin-top: var(--s3); overflow:hidden; }
+.menu li + li{ border-top: 1px solid var(--line); }
+.menu button, .menu a{
+  width:100%; min-height: 52px;
+  display:flex; align-items:center; gap: var(--s3);
+  padding: 0 var(--s4);
+  font-size: var(--fs-body); color: var(--text);
+  text-decoration:none;
+  transition: background var(--dur-fast) var(--ease);
+}
+.menu button:hover, .menu a:hover{ background: var(--surface-2); }
+.menu svg{ width:18px; height:18px; color: var(--text-2); flex:none; }
+.menu .chev{ margin-left:auto; color: var(--text-3); width:16px; height:16px; }
+.menu .danger{ color: var(--danger); }
+.menu .danger svg{ color: var(--danger); }
+
+/* ───────────────────────── 9. 底部导航 / 侧栏 ───────────────────────── */
+.tabbar{
+  position: fixed;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  width: min(420px, calc(100% - 24px));
+  display:grid; grid-template-columns: repeat(4,1fr);
+  padding: 6px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-2);
+  z-index: 40;
+}
+.tabbar button{
+  min-height: 52px;
+  display:grid; place-items:center; gap:3px;
+  border-radius: var(--r-pill);
+  color: var(--text-3);
+  font-size: 12px; font-weight: 500;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.tabbar button svg{ width:21px; height:21px; }
+.tabbar button[aria-current="page"]{ color: var(--accent); background: var(--accent-soft); }
+
+/* ───────────────────────── 10. 对话框与提示 ───────────────────────── */
+.overlay{
+  position: fixed; inset:0; z-index: 60;
+  background: rgba(4,8,8,.66);
+  backdrop-filter: blur(3px);
+  display:grid; place-items:center;
+  padding: var(--s4);
+  animation: fade var(--dur) var(--ease);
+}
+.overlay[hidden]{ display:none; }
+@keyframes fade{ from{ opacity:0 } to{ opacity:1 } }
+.dialog{
+  width: min(440px, 100%);
+  max-height: 82dvh; overflow:auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-2);
+  padding: var(--s5);
+  animation: rise var(--dur) var(--ease);
+}
+@keyframes rise{ from{ transform: translateY(12px); opacity:0 } to{ transform:none; opacity:1 } }
+.dialog h2{ font-size: var(--fs-h3); font-weight:600; }
+.dialog p{ margin-top: var(--s3); font-size: var(--fs-meta); color: var(--text-2); }
+.dialog .row{ display:flex; gap: var(--s2); margin-top: var(--s5); }
+.dialog .row .btn{ flex:1; }
+
+.toast{
+  position: fixed; left:50%; transform: translateX(-50%);
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font-size: var(--fs-meta);
+  padding: 10px 18px;
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-2);
+  opacity:0; pointer-events:none;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+  z-index: 70;
+}
+.toast.show{ opacity:1; transform: translateX(-50%) translateY(-6px); }
+
+/* ───────────────────────── 11. 响应式 ───────────────────────── */
+@media (min-width: 720px){
+  .grid{ grid-template-columns: repeat(3, 1fr); }
+  .tonight{ padding-top: var(--s5); }
+}
+@media (min-width: 1024px){
+  .shell{
+    grid-template-columns: 264px 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  /* 品牌独占第一行，导航在第二行：两者不再共用同一网格单元格 */
+  .topbar{
+    grid-column: 1; grid-row: 1;
+    padding: var(--s5) var(--s4) var(--s4);
+  }
+  .topbar-actions{ display:none; }
+  .sidenav{
+    display:flex; flex-direction:column; gap: 4px;
+    grid-column: 1; grid-row: 2;
+    padding: 0 var(--s3) var(--s5);
+  }
+  .sidenav button{
+    min-height: 46px;
+    display:flex; align-items:center; gap: 12px;
+    padding: 0 var(--s3);
+    border-radius: var(--r-md);
+    color: var(--text-2);
+    font-size: var(--fs-body);
+    text-align:left;
+    transition: all var(--dur-fast) var(--ease);
+  }
+  .sidenav button svg{ width:20px; height:20px; }
+  .sidenav button:hover{ background: var(--surface-2); color: var(--text); }
+  .sidenav button[aria-current="page"]{ background: var(--accent-soft); color: var(--accent); font-weight:600; }
+  .sidenav .side-foot{
+    margin-top:auto;
+    padding: var(--s5) var(--s3) 0;
+    font-size: var(--fs-meta);
+    color: var(--text-3);
+  }
+
+  main{
+    grid-column: 2; grid-row: 1 / span 2;
+    width: 100%;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: var(--s6) var(--s6) var(--s7);
+  }
+  .tabbar{ display:none; }
+  .toast{ bottom: var(--s6); }
+  .topbar .theme-btn{ display:none; }
+  .sidenav .theme-btn{ display:flex; }
+  /* 宽屏下输入框不应拉满整列 */
+  .search{ max-width: 460px; }
+}
+
+/* ───────────────────────── 12. 可访问性 ───────────────────────── */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- 图标集：内联 SVG 保证跨平台字形一致，避免字符符号在 Android/iOS 上渲染不同 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m3 13 9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 19V5m0 14h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="m7 15 4-5 3 3 5-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5-11-6.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="7" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/><rect x="13.4" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.3 2.4c-.6.2-.9.7-.9 1.3v.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="16.6" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m10 10 1.4 1.4m0-12.8-1.4 1.4m-10 10-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12c2.5 0 2.5-6 5-6s2.5 12 5 12 2.5-6 5-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-rain" viewBox="0 0 24 24"><path d="M7 14a4 4 0 0 1 .6-8 5.5 5.5 0 0 1 10.2 1.6A3.6 3.6 0 0 1 17.5 14H7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 17.5 8 19m5-1.5L12 19m5-1.5L15.8 19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-freq" viewBox="0 0 24 24"><path d="M4 12h2.5l2-5 3 10 2.5-7 2 4H20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 5.5A1.5 1.5 0 0 1 6.5 4H17a2 2 0 0 1 2 2v13a1 1 0 0 1-1 1H6.5A1.5 1.5 0 0 1 5 18.5v-13Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 8h6M9 12h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v10m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 18h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.5 7V5.5h5V7M7 7l.8 12h8.4L17 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.5v2.2M12 18.3v2.2M4.7 7.8l1.9 1.1m10.8 6.2 1.9 1.1M4.7 16.2l1.9-1.1m10.8-6.2 1.9-1.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M2 15c3-4 6 2 9 0s5-1 11-5" fill="none" stroke="#f2e4c9" stroke-width="2" stroke-linecap="round"/><path d="M2 19c4-3 7 2 11 0s6-1 9-3" fill="none" stroke="#7fb3ab" stroke-width="2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="brand-name">听澜<small>TINGLAN</small></div>
+    </div>
+    <div class="topbar-actions">
+      <button class="icon-btn theme-btn" id="themeBtn" aria-label="切换到日间模式" title="日间 / 夜间">
+        <svg id="themeIcon"><use href="#i-sun"/></svg>
+      </button>
+      <button class="icon-btn" id="helpBtn" aria-label="使用须知与安全">
+        <svg><use href="#i-help"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="sidenav" aria-label="主导航">
+    <button data-nav="tonight" aria-current="page"><svg><use href="#i-moon"/></svg>今晚</button>
+    <button data-nav="presets"><svg><use href="#i-layers"/></svg>声音库</button>
+    <button data-nav="records"><svg><use href="#i-chart"/></svg>记录</button>
+    <button data-nav="me"><svg><use href="#i-user"/></svg>我的</button>
+    <button class="theme-btn" id="themeBtn2" style="margin-top:12px"><svg><use href="#i-sun"/></svg><span>日间模式</span></button>
+    <div class="side-foot">本地运行<br>数据不出设备</div>
+  </nav>
+
+  <main id="main">
+    <!-- ① 今晚：一屏一件事 -->
+    <section class="view" id="view-tonight" aria-label="今晚">
+      <div class="tonight">
+        <p class="tonight-eyebrow">10 月 28 日 · 周三 · 22:46</p>
+        <h1>轻柔助眠</h1>
+        <p class="tonight-tracks">棕色噪声 · 雨声 · 粉红噪声</p>
+
+        <div class="orb-wrap">
+          <span class="orb-ring" aria-hidden="true"></span>
+          <button class="orb" id="orb" aria-pressed="false" aria-label="开始播放">
+            <svg id="orbIcon"><use href="#i-play"/></svg>
+          </button>
+        </div>
+        <div class="orb-label" id="orbLabel">开始播放</div>
+
+        <div class="tonight-meta">
+          <span><svg width="14" height="14"><use href="#i-moon"/></svg>30 分钟</span>
+          <i class="dot-sep"></i>
+          <span>渐入 5 秒</span>
+          <i class="dot-sep"></i>
+          <span id="metaGain">数字增益 18%</span>
+        </div>
+
+        <div class="wave" id="wave" aria-hidden="true"></div>
+
+        <div class="card volume-card">
+          <div class="volume-row">
+            <strong>音量</strong>
+            <span class="level" id="volLevel">轻</span>
+          </div>
+          <p class="volume-hint">滑杆是数字增益，不代表耳机声压。请先从低处试听。</p>
+          <input id="vol" type="range" min="0" max="100" value="18" step="1" aria-label="音量，数字增益百分比" aria-valuetext="轻，18%">
+        </div>
+
+        <div class="section-head" style="margin-top:28px">
+          <h2>换个声音</h2>
+          <span class="hint">点击直接切换</span>
+        </div>
+        <div class="chips" role="group" aria-label="快速切换方案">
+          <button class="chip" aria-pressed="true">轻柔助眠</button>
+          <button class="chip" aria-pressed="false">深度放松</button>
+          <button class="chip" aria-pressed="false">专注舒眠</button>
+          <button class="chip" aria-pressed="false">雨声 + 粉噪</button>
+          <button class="chip" aria-pressed="false">仅雨声</button>
+        </div>
+
+        <div class="card" style="padding:0 16px">
+          <details class="more">
+            <summary>
+              <svg><use href="#i-settings"/></svg>更多设置：时长、渐入渐出、音轨调节
+              <svg style="margin-left:auto" width="16" height="16"><use href="#i-down"/></svg>
+            </summary>
+            <div class="field-grid">
+              <div class="field">
+                <label for="dur">播放时长</label>
+                <select id="dur"><option>30 分钟</option><option>15 分钟</option><option>45 分钟</option><option>60 分钟</option><option>90 分钟</option></select>
+              </div>
+              <div class="field">
+                <label for="fade">渐入</label>
+                <select id="fade"><option>5 秒</option><option>关闭</option><option>3 秒</option><option>10 秒</option></select>
+              </div>
+              <div class="field">
+                <label for="fadeOut">渐出</label>
+                <select id="fadeOut"><option>10 秒</option><option>关闭</option><option>3 秒</option><option>5 秒</option></select>
+              </div>
+              <div class="field">
+                <label for="sleepTimer">自动停止</label>
+                <select id="sleepTimer"><option>播放结束</option><option>30 分钟后</option><option>60 分钟后</option></select>
+              </div>
+            </div>
+            <button class="btn btn-block" style="margin-bottom:16px">打开调音台</button>
+          </details>
+        </div>
+
+        <div class="safety" role="note">
+          <svg><use href="#i-shield"/></svg>
+          <p><strong>先调低设备音量再开始。</strong>听澜只控制数字电平，无法换算成耳机声压；出现耳鸣加重、耳闷或头晕请立即停止。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ② 声音库 -->
+    <section class="view" id="view-presets" aria-label="声音库" hidden>
+      <div class="section-head" style="margin-top:12px"><h2>声音库</h2><span class="hint">12 个预设</span></div>
+      <label class="search">
+        <svg><use href="#i-search"/></svg>
+        <span class="sr">搜索预设</span>
+        <input id="q" type="search" placeholder="搜索预设或声音组合" autocomplete="off">
+      </label>
+      <div class="chips" role="group" aria-label="按场景筛选">
+        <button class="chip" aria-pressed="true">全部</button>
+        <button class="chip" aria-pressed="false">入睡</button>
+        <button class="chip" aria-pressed="false">专注</button>
+        <button class="chip" aria-pressed="false">掩蔽</button>
+        <button class="chip" aria-pressed="false">自然</button>
+      </div>
+
+      <div class="feature">
+        <p class="eyebrow">今晚的建议</p>
+        <h2>给安静的夜晚<br>一点柔和的背景声</h2>
+        <p>雨声与低频宽带声音轻柔融合，试着让注意力从耳鸣转向环境。</p>
+        <button class="btn btn-accent" data-toast="已加载「轻柔助眠」，点主按钮开始">使用轻柔助眠</button>
+      </div>
+
+      <div class="section-head" style="margin-top:28px"><h2>精选</h2><span class="hint">点击加载到今晚</span></div>
+      <div class="grid" id="presetGrid"></div>
+
+      <button class="btn btn-block" style="margin-top:16px">＋ 新建混合方案</button>
+    </section>
+
+    <!-- ③ 记录 -->
+    <section class="view" id="view-records" aria-label="记录" hidden>
+      <div class="section-head" style="margin-top:12px"><h2>记录</h2><span class="hint">本周 10/22 – 10/28</span></div>
+      <div class="segmented" role="tablist" aria-label="记录分类">
+        <button role="tab" aria-selected="true" data-seg="overview">概览</button>
+        <button role="tab" aria-selected="false" data-seg="trend">趋势</button>
+        <button role="tab" aria-selected="false" data-seg="log">日志</button>
+      </div>
+
+      <div data-panel="overview">
+        <div class="stat-row">
+          <div class="stat"><span>本周播放</span><strong>126<small>分钟</small></strong></div>
+          <div class="stat"><span>记录天数</span><strong>5<small>天</small></strong></div>
+          <div class="stat"><span>平均入睡</span><strong>24<small>分钟</small></strong></div>
+        </div>
+        <div class="card chart-card">
+          <div class="chart-head"><h3>耳鸣困扰变化</h3><span>7 天</span></div>
+          <canvas id="chart" aria-label="耳鸣困扰自评趋势：从 7 降到 4"></canvas>
+        </div>
+        <p class="volume-hint" style="margin-top:12px">0 表示完全不困扰，10 表示极度困扰。这里显示的是你的自评，不是听力检测结果。</p>
+        <button class="btn btn-block" style="margin-top:16px">＋ 记录今天的感受</button>
+      </div>
+
+      <div data-panel="trend" hidden>
+        <div class="card chart-card">
+          <div class="chart-head"><h3>30 天趋势</h3><span>平均值 5.8</span></div>
+          <canvas id="chart2" aria-label="30 天耳鸣困扰趋势"></canvas>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><span>播放天数</span><strong>18<small>天</small></strong></div>
+          <div class="stat"><span>最长一次</span><strong>42<small>分钟</small></strong></div>
+          <div class="stat"><span>不适停止</span><strong>1<small>次</small></strong></div>
+        </div>
+      </div>
+
+      <div data-panel="log" hidden>
+        <ul class="log card" style="padding:4px 16px">
+          <li>
+            <div class="l-icon"><svg><use href="#i-moon"/></svg></div>
+            <div class="l-main"><strong>轻柔助眠</strong><span>10 月 28 日 · 30 分钟 · 手动停止</span></div>
+            <div class="l-val">困扰 7→4</div>
+          </li>
+          <li>
+            <div class="l-icon"><svg><use href="#i-rain"/></svg></div>
+            <div class="l-main"><strong>雨声 + 粉噪</strong><span>10 月 27 日 · 45 分钟 · 播放结束</span></div>
+            <div class="l-val">困扰 8→5</div>
+          </li>
+          <li>
+            <div class="l-icon"><svg><use href="#i-wave"/></svg></div>
+            <div class="l-main"><strong>深度放松</strong><span>10 月 26 日 · 20 分钟 · 手动停止</span></div>
+            <div class="l-val">困扰 6→6</div>
+          </li>
+          <li>
+            <div class="l-icon"><svg><use href="#i-freq"/></svg></div>
+            <div class="l-main"><strong>专注舒眠</strong><span>10 月 25 日 · 因不适停止 8 分钟</span></div>
+            <div class="l-val">困扰 7→8</div>
+          </li>
+        </ul>
+        <button class="btn btn-block" style="margin-top:16px"><svg><use href="#i-download"/></svg>导出 CSV 记录</button>
+      </div>
+    </section>
+
+    <!-- ④ 我的 -->
+    <section class="view" id="view-me" aria-label="我的" hidden>
+      <div class="card profile">
+        <div class="avatar" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="3.4" fill="none" stroke="#cfe6e1" stroke-width="1.6"/><path d="M5.5 20c0-3.4 2.9-5.6 6.5-5.6s6.5 2.2 6.5 5.6" fill="none" stroke="#cfe6e1" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </div>
+        <div>
+          <h2>听澜用户</h2>
+          <p>偏好只保存在这台设备</p>
+        </div>
+        <button class="btn btn-ghost" style="margin-left:auto">编辑</button>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat"><span>我的预设</span><strong>3<small>个</small></strong></div>
+        <div class="stat"><span>累计播放</span><strong>7.4<small>小时</small></strong></div>
+        <div class="stat"><span>自评</span><strong>12<small>条</small></strong></div>
+      </div>
+
+      <ul class="menu card">
+        <li><button><svg><use href="#i-layers"/></svg>我的预设<svg class="chev"><use href="#i-chev"/></svg></button></li>
+        <li><button><svg><use href="#i-settings"/></svg>播放与设备设置<svg class="chev"><use href="#i-chev"/></svg></button></li>
+        <li><button><svg><use href="#i-book"/></svg>耳鸣档案<svg class="chev"><use href="#i-chev"/></svg></button></li>
+        <li><button><svg><use href="#i-download"/></svg>导出完整数据<svg class="chev"><use href="#i-chev"/></svg></button></li>
+        <li><button id="helpBtn2"><svg><use href="#i-shield"/></svg>使用须知与安全<svg class="chev"><use href="#i-chev"/></svg></button></li>
+        <li><button class="danger"><svg><use href="#i-trash"/></svg>清除本地记录<svg class="chev"><use href="#i-chev"/></svg></button></li>
+      </ul>
+
+      <div class="safety" style="margin-top:20px">
+        <svg><use href="#i-shield"/></svg>
+        <p>听澜是声音丰富化与自我观察工具，<strong>不是临床验证的治疗设备</strong>，也不能替代诊疗。</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="主导航">
+    <button data-nav="tonight" aria-current="page"><svg><use href="#i-moon"/></svg><span>今晚</span></button>
+    <button data-nav="presets"><svg><use href="#i-layers"/></svg><span>声音库</span></button>
+    <button data-nav="records"><svg><use href="#i-chart"/></svg><span>记录</span></button>
+    <button data-nav="me"><svg><use href="#i-user"/></svg><span>我的</span></button>
+  </nav>
+</div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <h2 id="dlgTitle">使用须知</h2>
+    <p><strong>先降低设备音量。</strong>听澜的滑杆是数字增益，不是声压级；未校准的设备无法保证耳机的实际响度。</p>
+    <p>出现耳鸣加重、耳闷、头晕或头痛时请立即停止，并咨询医生。</p>
+    <p>听澜不诊断、不治疗耳鸣，也不能替代医疗建议。所有声音与记录仅保存在本机。</p>
+    <div class="row">
+      <button class="btn" id="dlgClose">知道了</button>
+      <button class="btn btn-accent" id="dlgGo">开始今晚</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── 波形条：高度用确定性伪随机，保证每次渲染一致 ── */
+  const wave = document.getElementById('wave');
+  const bars = 47;
+  let seed = 7;
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  wave.innerHTML = Array.from({ length: bars }, (_, i) => {
+    const c = Math.abs(i - bars / 2) / (bars / 2);          // 中间高、两侧低的包络
+    const h = Math.round(18 + (1 - c * c) * 58 + rnd() * 22);
+    return '<i style="--h:' + h + ';--i:' + i + '"></i>';
+  }).join('');
+
+  /* ── 播放 / 暂停 ── */
+  const orb = document.getElementById('orb');
+  const orbIcon = document.getElementById('orbIcon');
+  const orbLabel = document.getElementById('orbLabel');
+  const viewTonight = document.getElementById('view-tonight');
+  let playing = false;
+
+  function setPlaying(next) {
+    playing = next;
+    viewTonight.classList.toggle('playing', playing);
+    orb.setAttribute('aria-pressed', String(playing));
+    orb.setAttribute('aria-label', playing ? '暂停播放' : '开始播放');
+    orbIcon.innerHTML = '<use href="' + (playing ? '#i-pause' : '#i-play') + '"/>';
+    orbLabel.textContent = playing ? '正在播放 · 轻触暂停' : '开始播放';
+  }
+  orb.addEventListener('click', () => setPlaying(!playing));
+
+  /* ── 音量：数字增益 + 听感标签 ── */
+  const vol = document.getElementById('vol');
+  const volLevel = document.getElementById('volLevel');
+  const metaGain = document.getElementById('metaGain');
+  function syncVol() {
+    const v = Number(vol.value);
+    vol.style.setProperty('--fill', v + '%');
+    const label = v < 20 ? '轻' : v < 45 ? '适中' : v < 70 ? '较响' : '很响';
+    volLevel.textContent = label;
+    metaGain.textContent = '数字增益 ' + v + '%';
+    vol.setAttribute('aria-valuetext', label + '，' + v + '%');
+  }
+  vol.addEventListener('input', syncVol);
+  syncVol();
+
+  /* ── 导航 ── */
+  const views = ['tonight', 'presets', 'records', 'me'];
+  function go(name) {
+    views.forEach(v => {
+      document.getElementById('view-' + v).hidden = v !== name;
+    });
+    document.querySelectorAll('[data-nav]').forEach(b => {
+      if (b.dataset.nav === name) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    });
+    document.getElementById('main').scrollIntoView({ block: 'start' });
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('[data-nav]').forEach(b => {
+    b.addEventListener('click', () => go(b.dataset.nav));
+  });
+
+  /* ── 主题 ── */
+  const root = document.documentElement;
+  function setTheme(t) {
+    root.dataset.theme = t;
+    const isNight = t === 'night';
+    const label = isNight ? '切换到日间模式' : '切换到夜间模式';
+    document.getElementById('themeBtn').setAttribute('aria-label', label);
+    document.querySelector('#themeBtn use').setAttribute('href', isNight ? '#i-sun' : '#i-moon');
+    const b2 = document.getElementById('themeBtn2');
+    b2.querySelector('span').textContent = isNight ? '日间模式' : '夜间模式';
+    b2.querySelector('use').setAttribute('href', isNight ? '#i-sun' : '#i-moon');
+    document.querySelector('meta[name="theme-color"]').setAttribute('content', isNight ? '#0a100f' : '#f5f1e8');
+  }
+  ['themeBtn', 'themeBtn2'].forEach(id => {
+    document.getElementById(id).addEventListener('click', () => {
+      setTheme(root.dataset.theme === 'night' ? 'day' : 'night');
+      if (typeof drawCharts === 'function') drawCharts();
+    });
+  });
+
+  /* ── 分段控件 ── */
+  document.querySelectorAll('[data-seg]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const seg = btn.dataset.seg;
+      document.querySelectorAll('[data-seg]').forEach(b => b.setAttribute('aria-selected', String(b === btn)));
+      document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== seg; });
+      drawCharts();
+    });
+  });
+
+  /* ── 对话框与提示 ── */
+  const overlay = document.getElementById('overlay');
+  function openHelp() {
+    overlay.hidden = false;
+    document.getElementById('dlgGo').focus();
+  }
+  function closeHelp() {
+    overlay.hidden = true;
+    document.getElementById('helpBtn').focus();
+  }
+  ['helpBtn', 'helpBtn2'].forEach(id => document.getElementById(id).addEventListener('click', openHelp));
+  document.getElementById('dlgClose').addEventListener('click', closeHelp);
+  document.getElementById('dlgGo').addEventListener('click', () => { closeHelp(); go('tonight'); });
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeHelp(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) closeHelp(); });
+
+  const toast = document.getElementById('toast');
+  let toastTimer = 0;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+  }
+  document.querySelectorAll('[data-toast]').forEach(el => {
+    el.addEventListener('click', () => showToast(el.dataset.toast));
+  });
+
+  /* ── 预设卡片 ── */
+  const presets = [
+    { n: '轻柔助眠', d: '棕色噪声 · 雨声', i: '#i-moon', t: '入睡' },
+    { n: '深度放松', d: '粉噪 · 低频正弦', i: '#i-wave', t: '放松' },
+    { n: '专注舒眠', d: '平稳的宽带背景声', i: '#i-freq', t: '掩蔽' },
+    { n: '雨声 + 粉噪', d: '温和的自然录音', i: '#i-rain', t: '自然' },
+    { n: '夜航', d: '极低频 · 缓慢起伏', i: '#i-layers', t: '入睡' },
+    { n: '书房午后', d: '粉噪 · 轻微混响', i: '#i-book', t: '专注' }
+  ];
+  document.getElementById('presetGrid').innerHTML = presets.map(p =>
+    '<button class="preset" data-toast="已加载「' + p.n + '」">' +
+    '<span class="p-tag">' + p.t + '</span>' +
+    '<span class="p-icon"><svg><use href="' + p.i + '"/></svg></span>' +
+    '<strong>' + p.n + '</strong><span>' + p.d + '</span></button>'
+  ).join('');
+  document.querySelectorAll('.preset').forEach(el => {
+    el.addEventListener('click', () => showToast(el.dataset.toast + '，点主按钮开始'));
+  });
+
+  /* ── 筛选 chip 的互斥组 ── */
+  document.querySelectorAll('.chips').forEach(group => {
+    group.querySelectorAll('.chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        group.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
+      });
+    });
+  });
+
+  /* ── 趋势图：无坐标轴的极简折线，避免图表噪音 ── */
+  function drawOne(canvas, values, withFill) {
+    if (!canvas || !canvas.offsetWidth) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = canvas.offsetWidth, h = canvas.offsetHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const c = canvas.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+
+    const css = getComputedStyle(document.documentElement);
+    const accent = css.getPropertyValue('--accent').trim();
+    const line = css.getPropertyValue('--line-strong').trim();
+
+    const pad = 12;
+    const min = 0, max = 10;
+    const px = i => pad + (w - pad * 2) * (i / (values.length - 1));
+    const py = v => h - pad - (h - pad * 2) * ((v - min) / (max - min));
+
+    // 基线
+    c.strokeStyle = line;
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(pad, py(5));
+    c.lineTo(w - pad, py(5));
+    c.stroke();
+
+    // 平滑曲线
+    c.beginPath();
+    c.moveTo(px(0), py(values[0]));
+    for (let i = 1; i < values.length; i++) {
+      const x0 = px(i - 1), y0 = py(values[i - 1]);
+      const x1 = px(i), y1 = py(values[i]);
+      const cx = (x0 + x1) / 2;
+      c.bezierCurveTo(cx, y0, cx, y1, x1, y1);
+    }
+    c.strokeStyle = accent;
+    c.lineWidth = 2;
+    c.lineJoin = 'round';
+    c.stroke();
+
+    if (withFill) {
+      c.lineTo(px(values.length - 1), h - pad);
+      c.lineTo(px(0), h - pad);
+      c.closePath();
+      const g = c.createLinearGradient(0, pad, 0, h);
+      g.addColorStop(0, accent + '33');
+      g.addColorStop(1, accent + '00');
+      c.fillStyle = g;
+      c.fill();
+    }
+
+    // 末点高亮
+    const lx = px(values.length - 1), ly = py(values[values.length - 1]);
+    c.beginPath();
+    c.arc(lx, ly, 4.5, 0, Math.PI * 2);
+    c.fillStyle = accent;
+    c.fill();
+  }
+
+  function drawCharts() {
+    drawOne(document.getElementById('chart'), [7, 7, 6, 6, 5, 5, 4], true);
+    drawOne(document.getElementById('chart2'), [8, 7, 7, 6, 6, 6, 5, 5, 6, 5, 4], false);
+  }
+  window.addEventListener('resize', drawCharts);
+  requestAnimationFrame(drawCharts);
+  setTimeout(drawCharts, 60);
+
+  setTheme('night');
+  go('tonight');
+})();
+</script>
+</body>
+</html>
