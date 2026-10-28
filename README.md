@@ -54,12 +54,16 @@ node --test tests/core.test.mjs
 ## 文件结构
 
 ```text
-index.html    页面结构
-styles.css    响应式奶油风样式
-app.js        播放、混音、预设与记录逻辑
-README.md     项目说明
-.gitignore    Git 忽略规则
+index.html        页面结构
+styles.css        响应式奶油风样式
+core.js           可测试核心：噪声、滤波、时钟、导出与数据校验
+app.js            播放、混音、预设、存储与界面编排
+tests/core.test.mjs  核心逻辑自动化测试
+README.md         项目说明
+.gitignore        Git 忽略规则
 ```
+
+记录按条写入 IndexedDB（`logs`、`sessions` 两个对象仓库），不再整份覆盖；旧版 `kv` 存储会在启动时自动迁移。
 
 ## 持续部署
 

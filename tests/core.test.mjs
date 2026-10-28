@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeChannels, assessExport, boundaryStepRatio, canTransition, createClock,
-  csvCell, encodeWav, exportAllowance, fillNoise, masterGain, measureFilter,
+  csvCell, decodedAudioAllowance, encodeWav, exportAllowance, fillNoise, masterGain, measureFilter,
   noiseLength, protectionDecision, pushParamEvent, recordsToCsv, replacementGainRatio,
   snapshotSettings, spectralSlopeDbPerOctave, trackGain, validateBackup, voiceSpec
 } from '../core.js';
@@ -176,4 +176,58 @@ test('异常峰值会衰减或停止，正常峰值会消退计数', () => {
   assert.equal(protectionDecision({ peak: 0.97, safetyGain: 1, strikes: 3 }).action, 'duck');
   assert.equal(protectionDecision({ peak: 1.2, safetyGain: 1, strikes: 0 }).action, 'stop');
   assert.equal(protectionDecision({ peak: 0.2, safetyGain: 1, strikes: 0, nonFinite: 1 }).reason, 'nonfinite');
+});
+
+test('保护压低后的增益会逐步恢复，而不是永久衰减', () => {
+  let state = { safetyGain: 0.5, strikes: 4 };
+  for (let i = 0; i < 60; i++) state = { ...state, ...protectionDecision({ peak: 0.2, ...state }) };
+  assert.ok(state.safetyGain > 0.99, `恢复后增益仍为 ${state.safetyGain}`);
+});
+
+test('数字增益已重新定标：满档可听，且不超过数字满幅', () => {
+  assert.equal(masterGain(100), 1);
+  const white = fillNoise('white', noiseLength('white', 44100), 44100, 3, 0);
+  let single = 0;
+  for (let i = 0; i < white.length; i++) single = Math.max(single, Math.abs(white[i] * trackGain(100, 1) * masterGain(100)));
+  const singleDb = 20 * Math.log10(single);
+  assert.ok(singleDb > -3 && singleDb < 0, `单轨满档峰值 ${singleDb.toFixed(2)} dBFS`);
+
+  const preset = [{ kind: 'brown', level: 32 }, { kind: 'rain', level: 31 }, { kind: 'pink', level: 20 }];
+  const buffers = preset.map(t => fillNoise(t.kind, noiseLength(t.kind, 44100), 44100, 11, 0));
+  let mix = 0;
+  for (let i = 0; i < 44100; i++) {
+    let s = 0;
+    preset.forEach((t, k) => { s += buffers[k][i % buffers[k].length] * trackGain(t.level, preset.length) });
+    mix = Math.max(mix, Math.abs(s * masterGain(100)));
+  }
+  const mixDb = 20 * Math.log10(mix);
+  assert.ok(mixDb > -11 && mixDb < -8, `三轨预设满档峰值 ${mixDb.toFixed(2)} dBFS`);
+  assert.ok(mixDb + 20 * Math.log10(masterGain(18)) < -25, '默认音量下输出应处在安全且可听的区间');
+  assert.ok(20 * Math.log10(masterGain(18)) < -15, '默认数字增益仍保留足够衰减');
+});
+
+test('本地音频按解码后的实际内存限制，而不是只看压缩文件大小', () => {
+  const long = decodedAudioAllowance({ duration: 600, sampleRate: 48000, numberOfChannels: 2 });
+  assert.equal(long.ok, false);
+  assert.match(long.reason, /内存/);
+  assert.ok(decodedAudioAllowance({ duration: 60, sampleRate: 48000, numberOfChannels: 2 }).ok);
+  assert.equal(decodedAudioAllowance({ duration: 0.1, sampleRate: 44100, numberOfChannels: 1 }).ok, false);
+  assert.equal(decodedAudioAllowance({ duration: NaN, sampleRate: 44100, numberOfChannels: 1 }).ok, false);
+});
+
+test('CSV 导出包含参数快照、参数变更、舒适度与不适反应', () => {
+  const csv = recordsToCsv(
+    [{
+      id: 's2', date: '2026-10-28T00:00:00.000Z', name: '实验', seconds: 600, confirmedSeconds: 600,
+      tracks: '陷波噪声', endReason: 'completed',
+      initialSettings: { volume: 30, tracks: [{ kind: 'notch', freq: 4000, bw: 0.5 }] },
+      parameterEvents: [{ t: 20, path: 'track.t1.freq', value: 4200 }]
+    }],
+    [{ date: '2026-10-28T00:00:00.000Z', before: 6, after: 4, comfort: 7, sleep: 25, adverseEffects: ['头晕'], notes: '可耐受', sessionId: 's2' }]
+  );
+  assert.match(csv, /初始参数JSON/);
+  assert.match(csv, /track\.t1\.freq/);
+  assert.match(csv, /""freq"":4000/);
+  assert.match(csv, /头晕/);
+  assert.match(csv, /"舒适度"/);
 });

@@ -19,6 +19,17 @@ export const TRACK_KINDS = ['pink', 'brown', 'white', 'rain', 'stream', 'band', 
 
 export const REPLACE_FADE = { old: 0.18, delay: 0.04, fade: 0.22 };
 
+// 数字电平定标：满档白噪声约 -2 dBFS，典型三轨预设约 -9 dBFS。
+// 峰值分析器必须接在限幅器之前，否则保护阈值永远无法被观测到。
+export const AUDIO_CONFIG = Object.freeze({
+  trackScale: 1,
+  masterScale: 1,
+  compressorThreshold: -3,
+  compressorKnee: 6,
+  compressorRatio: 4,
+  limiterThreshold: -1.5
+});
+
 export function canTransition(from, to) {
   return (TRANSITIONS[from] || []).includes(to);
 }
@@ -33,12 +44,12 @@ export function octQ(octaves) {
 }
 
 export function masterGain(volume) {
-  return 0.17 * Math.pow(clamp(volume, 0, 100) / 100, 1.3);
+  return AUDIO_CONFIG.masterScale * Math.pow(clamp(volume, 0, 100) / 100, 1.3);
 }
 
 export function trackGain(level, audibleCount) {
   const n = Math.max(1, audibleCount | 0);
-  return 0.54 * (clamp(level, 0, 100) / 100) / Math.sqrt(n);
+  return AUDIO_CONFIG.trackScale * (clamp(level, 0, 100) / 100) / Math.sqrt(n);
 }
 
 export function noiseLength(kind, sampleRate) {
@@ -362,7 +373,7 @@ export function protectionDecision({ peak, safetyGain, strikes, nonFinite = 0 })
     }
     return { action: 'hold', safetyGain, strikes: nextStrikes };
   }
-  return { action: 'clear', safetyGain, strikes: Math.max(0, strikes - 1) };
+  return { action: 'clear', safetyGain: Math.min(1, safetyGain + 0.01), strikes: Math.max(0, strikes - 1) };
 }
 
 export function analyzeChannels(channels, sampleRate) {
@@ -417,13 +428,24 @@ export function assessExport(analysis) {
   return { ok: true };
 }
 
+export function decodedAudioAllowance({ duration, sampleRate, numberOfChannels }, { maxSeconds = 600, maxBytes = 96 * 1024 * 1024 } = {}) {
+  if (![duration, sampleRate, numberOfChannels].every(Number.isFinite) || duration < 0.25 || duration > maxSeconds || sampleRate <= 0 || numberOfChannels < 1) {
+    return { ok: false, reason: `音频时长应介于 0.25 秒至 ${Math.round(maxSeconds / 60)} 分钟，且格式有效` };
+  }
+  const bytes = Math.ceil(duration * sampleRate) * numberOfChannels * 4;
+  if (bytes > maxBytes) {
+    return { ok: false, reason: `解码后约需 ${Math.ceil(bytes / 1048576)} MB 内存，超过 ${Math.round(maxBytes / 1048576)} MB 上限。请裁剪音频或降低采样率`, bytes };
+  }
+  return { ok: true, bytes };
+}
+
 export function exportAllowance(seconds, { deviceMemory = 8, mobile = false } = {}) {
   const allowed = [10, 30, 60, 120];
   if (!allowed.includes(seconds)) return { ok: false, reason: '不支持的导出时长' };
   const limit = mobile || (deviceMemory && deviceMemory <= 2) ? 30 : 120;
   if (seconds > limit) return { ok: false, reason: `当前设备请导出 ${limit} 秒以内，以避免内存不足` };
-  const bytes = seconds * 44100 * 2 * 4;
-  if (bytes > 48 * 1024 * 1024) return { ok: false, reason: '导出超出内存预算' };
+  const bytes = seconds * 44100 * 2 * 6;
+  if (bytes > 96 * 1024 * 1024) return { ok: false, reason: '导出超出内存预算' };
   return { ok: true, bytes };
 }
 
@@ -492,13 +514,21 @@ export function csvCell(value, text = false) {
 }
 
 export function recordsToCsv(sessions, logs) {
-  const cols = ['类型', '日期', '方案', '时长（秒）', '播放前困扰', '播放后困扰', '入睡分钟', '备注', '结束原因', '会话ID'];
+  const cols = ['类型', '日期', '方案', '时长（秒）', '播放前困扰', '播放后困扰', '舒适度', '入睡分钟', '不适反应', '备注', '音轨摘要', '结束原因', '会话ID', '初始参数JSON', '参数变更JSON'];
   const rows = [cols];
   for (const x of sessions) {
-    rows.push(['声音使用', x.date, x.name, x.confirmedSeconds ?? x.seconds, '', '', '', x.tracks || '', x.endReason || '', x.id || '']);
+    rows.push([
+      '声音使用', x.date, x.name, Math.round(x.confirmedSeconds ?? x.seconds), '', '', '', '', '', '',
+      x.tracks || '', x.endReason || '', x.id || '',
+      x.initialSettings ? JSON.stringify(x.initialSettings) : '',
+      Array.isArray(x.parameterEvents) && x.parameterEvents.length ? JSON.stringify(x.parameterEvents) : ''
+    ]);
   }
   for (const x of logs) {
-    rows.push(['自评', x.date, x.mix || '', '', x.before, x.after, x.sleep ?? '', x.notes || '', '', x.sessionId || '']);
+    rows.push([
+      '自评', x.date, x.mix || '', '', x.before, x.after, x.comfort ?? '', x.sleep ?? '',
+      Array.isArray(x.adverseEffects) ? x.adverseEffects.join('；') : '', x.notes || '', '', '', x.sessionId || '', '', ''
+    ]);
   }
   return '\ufeff' + rows.map(row => row.map(value => csvCell(value, typeof value === 'string')).join(',')).join('\r\n');
 }
