@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 需要完整历史才能对比 base SHA，用于行宽棘轮
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 语法检查
+        run: |
+          node --check core.js
+          node --check app.js
+          node --check scripts/check-style.mjs
+
+      - name: 单元测试
+        run: node --test tests/core.test.mjs
+
+      - name: 行宽棘轮（不允许新增超长行）
+        run: node scripts/check-style.mjs "${{ github.event.pull_request.base.sha || github.event.before }}"
