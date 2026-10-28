@@ -41,6 +41,15 @@ node --test tests/core.test.mjs
 
 测试覆盖噪声频谱斜率、循环接缝、陷波带宽、播放计时、导出削波判断、备份校验和 CSV 安全处理。
 
+GitHub Actions 在每次推送到 `main` 以及每个 PR 上运行语法检查、单元测试和行宽棘轮检查，见 `.github/workflows/ci.yml`。行宽检查（`node scripts/check-style.mjs`）只阻止新增超长行，允许改动既有长行，也不要求一次性重排历史代码。
+
+## 开发约定
+
+- [代码规范.md](./代码规范.md)：模块边界、命名、单位量纲、音频专项规则、存量债务
+- [Review检查清单.md](./Review检查清单.md)：提交门槛、按领域的检查项与验证命令、意见模板
+
+改动前请至少读完代码规范的第 0、7、9 节；提交 PR 时模板会自动带上硬门槛清单。涉及音频链路或数据模型的改动，需要在 PR 里说明影响面。
+
 ## Vercel 部署
 
 在 Vercel 中导入这个 GitHub 仓库，选择 **Other** / 无框架，保留默认根目录并部署。项目为纯静态网页，通常无需设置环境变量或构建命令。
@@ -54,13 +63,15 @@ node --test tests/core.test.mjs
 ## 文件结构
 
 ```text
-index.html        页面结构
-styles.css        响应式奶油风样式
-core.js           可测试核心：噪声、滤波、时钟、导出与数据校验
-app.js            播放、混音、预设、存储与界面编排
-tests/core.test.mjs  核心逻辑自动化测试
-README.md         项目说明
-.gitignore        Git 忽略规则
+index.html            页面结构
+styles.css            响应式奶油风样式
+core.js               可测试核心：噪声、滤波、时钟、导出与数据校验
+app.js                播放、混音、预设、存储与界面编排
+tests/core.test.mjs   核心逻辑自动化测试
+scripts/check-style.mjs  行宽棘轮检查（CI 与本地共用）
+.github/workflows/ci.yml CI：语法、测试、行宽
+README.md             项目说明
+.gitignore            Git 忽略规则
 ```
 
 记录按条写入 IndexedDB（`logs`、`sessions` 两个对象仓库），不再整份覆盖；旧版 `kv` 存储会在启动时自动迁移。
