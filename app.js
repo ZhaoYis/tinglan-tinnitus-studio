@@ -1,8 +1,8 @@
 import {
-  APP_VERSION, AUDIO_CONFIG, REPLACE_FADE, analyzeChannels, assessExport, canTransition, createClock,
+  APP_VERSION, AUDIO_CONFIG, REPLACE_FADE, TONE_CONFIG, analyzeChannels, assessExport, canTransition, createClock,
   decodedAudioAllowance, encodeWav, exportAllowance, fillNoise, masterGain as masterGainOf, measureFilter,
-  noiseLength, octQ, protectionDecision, pushParamEvent, recordsToCsv, responseCurve,
-  sanitizeLog, sanitizeSession, sanitizeTrack, snapshotSettings, trackGain as trackGainOf,
+  noiseLength, nextSeed, octQ, protectionDecision, pushParamEvent, randomTracks, recordsToCsv, responseCurve,
+  sanitizeLog, sanitizeSession, sanitizeTrack, seedFromId, snapshotSettings, trackGain as trackGainOf,
   validateBackup, voiceSpec
 } from './core.js';
 
@@ -27,7 +27,28 @@ const uid=()=> 'tl-'+Date.now().toString(36)+'-'+Math.random().toString(36).slic
 function storage(key){try{return JSON.parse(localStorage.getItem(key))}catch{return null}}
 let booted=false,idbOk=false,dbPromise=null;
 const recordChannel='BroadcastChannel' in window?new BroadcastChannel('tinglan-records-v2'):null;
-function openDb(){if(!('indexedDB' in window))return Promise.reject(new Error('no idb'));return new Promise((resolve,reject)=>{const req=indexedDB.open('tinglan-db',2);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('logs'))db.createObjectStore('logs',{keyPath:'id'});if(!db.objectStoreNames.contains('sessions'))db.createObjectStore('sessions',{keyPath:'id'})};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
+function openDb(){
+  if(!('indexedDB' in window))return Promise.reject(new Error('no idb'));
+  return new Promise((resolve,reject)=>{
+    // v3：音轨新增 4 个可选字段，对象仓库与主键都没变。旧记录不搬数据，
+    // 读出时由 sanitizeTrack 补默认值，因此升级事务只需保证仓库存在。
+    const req=indexedDB.open('tinglan-db',3);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');
+      if(!db.objectStoreNames.contains('logs'))db.createObjectStore('logs',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('sessions'))db.createObjectStore('sessions',{keyPath:'id'});
+    };
+    // 另一个标签页仍占着 v2 时不能干等：降级到 localStorage 比卡住启动更可取。
+    req.onblocked=()=>reject(new Error('另一个标签页仍占用旧版本数据库'));
+    req.onsuccess=()=>{
+      const db=req.result;
+      db.onversionchange=()=>db.close();
+      resolve(db);
+    };
+    req.onerror=()=>reject(req.error);
+  });
+}
 function idbGetKey(db,key){return new Promise((resolve,reject)=>{const req=db.transaction('kv','readonly').objectStore('kv').get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
 function idbGetAll(db,store){return new Promise((resolve,reject)=>{const req=db.transaction(store,'readonly').objectStore(store).getAll();req.onsuccess=()=>resolve(req.result||[]);req.onerror=()=>reject(req.error)})}
 function idbPut(db,store,value){return new Promise((resolve,reject)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(value);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)})}
@@ -41,7 +62,14 @@ function saveRecord(store,entry){const item=normalizeRecord(store,entry);if(!ite
 function deleteRecord(store,id){if(!idbOk||!dbPromise){persist();return}dbPromise.then(db=>idbDelete(db,store,id)).then(()=>recordChannel?.postMessage({type:'records-changed'})).catch(()=>notify('记录删除失败，请重试'))}
 async function refreshRecords(){if(!idbOk||!dbPromise)return;try{const db=await dbPromise;const [nextLogs,nextSessions]=await Promise.all([idbGetAll(db,'logs'),idbGetAll(db,'sessions')]);logs=nextLogs.map(x=>normalizeRecord('logs',x)).filter(Boolean);sessions=nextSessions.map(x=>normalizeRecord('sessions',x)).filter(Boolean);renderStats();if(page==='records')renderRecords();if(page==='me')renderMe()}catch(err){console.warn('刷新记录失败，界面保留上一次数据',err)}}
 if(recordChannel)recordChannel.onmessage=event=>{if(event.data?.type==='records-changed')refreshRecords()};
-function track(kind='pink',level=30,pan=0,freq=4000,bw=1,cutoff=8000){return {id:uid(),kind,level,pan,freq,bw,cutoff,mute:false,solo:false,fileName:''}}
+function track(kind='pink',level=30,pan=0,freq=4000,bw=1,cutoff=8000){
+  const id=uid();
+  return {
+    id,kind,level,pan,freq,bw,cutoff,mute:false,solo:false,fileName:'',
+    seed:seedFromId(id),motionDepth:30,
+    highpassHz:TONE_CONFIG.highpassMinHz,trebleDb:0
+  };
+}
 function validTrack(t){const v=sanitizeTrack(t&&typeof t==='object'?t:{});if(!v.id)v.id=uid();if(!TYPES[v.kind])v.kind='pink';return v}
 function tracksFor(p){return p.tracks.map(([k,lv,pan,fq,bw,cut])=>track(k,lv,pan,fq,bw,cut))}
 const fallback={volume:18,duration:30,fadeIn:5,fadeOut:5,activeName:'轻柔助眠',activeId:'sleep',tracks:tracksFor(PRESETS[0])};
@@ -55,6 +83,8 @@ let person=v4?.person&&typeof v4.person==='object'?v4.person:{name:'听澜用户
 let page='home',selectedCategory='全部',search='',trendDays=7,files=new Map(),audioContext=null,engine=null,playerState='IDLE',epoch=0,playbackQueue=Promise.resolve(),session=null,lastSessionId=null,clock=createClock(),elapsed=0,exporting=false,toastTimeout=0;
 let protectionTimer=0,wakeLock=null,spectrumFrame=0,spectrumTimer=0,spectrumDirty=true;
 let recordTab='overview',dialogReturn=null,lastTrigger=null;
+// A/B 双槽与撤销栈只保存参数，不保存本地音频的 AudioBuffer（与「方案只存参数」一致）。
+let mixHistory=[],abSlots={A:null,B:null},abCurrent='A';
 const NOISE_CACHE_BYTES=48*1048576;let noiseCache=new Map(),noiseCacheBytes=0;
 const REASON_TEXT={completed:'定时结束',manual:'手动停止',discomfort:'不适停止',error:'异常停止',interrupted:'播放中断'};
 const fmt=s=>{s=Math.max(0,Math.floor(s));return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
@@ -147,8 +177,91 @@ function renderQuick(){
   });
   place.innerHTML=[...items,...customs].join('');
 }
+function mixState(){
+  return {
+    tracks:settings.tracks.map(t=>({...t})),
+    activeName:settings.activeName,
+    activeId:settings.activeId
+  };
+}
+function pushMixHistory(){
+  const next=mixState();
+  const last=mixHistory.at(-1);
+  // 状态相同（例如切到一个刚复制出来的空槽）也要刷新按钮，否则 A/B 高亮会停在旧槽。
+  if(last&&JSON.stringify(last)===JSON.stringify(next)){
+    updateMixerTools();
+    return;
+  }
+  mixHistory.push(next);
+  if(mixHistory.length>30)mixHistory.shift();
+  updateMixerTools();
+}
+function applyMix(state,silent=false){
+  if(!state)return;
+  settings.tracks=(state.tracks||[]).slice(0,6).map(validTrack);
+  settings.activeName=String(state.activeName||'自定义混音').slice(0,80);
+  settings.activeId=String(state.activeId||'custom').slice(0,40);
+  files.clear();
+  if(engine)rebuildVoices();
+  renderTracks();renderQuick();readSettingsToUI();persist();
+  abSlots[abCurrent]=mixState();
+  if(!silent)notify('已切换混音；本地音频需要重新选择');
+}
+function updateMixerTools(){
+  const undo=$('undoMix');
+  if(undo)undo.disabled=mixHistory.length<2;
+  for(const key of ['A','B']){
+    const btn=$('ab'+key);
+    if(!btn)continue;
+    btn.setAttribute('aria-pressed',String(abCurrent===key));
+    btn.classList.toggle('active',abCurrent===key);
+  }
+  const store=$('abStore');
+  if(store)store.textContent=`存入 ${abCurrent}`;
+}
+function undoMix(){
+  if(mixHistory.length<2)return;
+  mixHistory.pop();
+  applyMix(mixHistory.at(-1),true);
+  notify('已撤销上一步');
+  updateMixerTools();
+}
+function switchAb(key){
+  if(key===abCurrent)return;
+  abSlots[abCurrent]=mixState();
+  if(!abSlots[key])abSlots[key]=mixState();
+  abCurrent=key;
+  applyMix(abSlots[key],true);
+  updateMixerTools();
+  pushMixHistory();
+  notify(`已切到 ${key} 槽`);
+}
+function storeAb(){
+  abSlots[abCurrent]=mixState();
+  notify(`已存入 ${abCurrent} 槽`);
+  updateMixerTools();
+}
+function randomizeMix(){
+  const seed=nextSeed(Date.now()>>>0);
+  const specs=randomTracks(seed,2+(seed%3));
+  settings.tracks=specs.map(s=>{
+    const t=track(s.kind,s.level,s.pan);
+    return {...t,cutoff:s.cutoff,highpassHz:s.highpassHz,trebleDb:s.trebleDb,motionDepth:s.motionDepth};
+  });
+  settings.activeName='随机混音';
+  settings.activeId='custom';
+  files.clear();
+  if(engine)rebuildVoices();
+  renderTracks();renderQuick();readSettingsToUI();persist();pushMixHistory();
+  notify('已随机生成一组保守音量的混音');
+}
 function renderTracks(){
   const container=$('trackList');
+  // 改声音来源 / 换一段声音都会整体重绘列表；保留已展开的「精细参数」，
+  // 否则用户每改一次就要重新点开面板。
+  const expanded=new Set([...container.querySelectorAll('[data-track]')]
+    .filter(card=>card.querySelector('.track-advanced')?.open)
+    .map(card=>card.dataset.track));
   container.innerHTML=settings.tracks.map((t,i)=>{
     const kind=TYPES[t.kind]||'声音';
     const detail=t.kind==='file'?(t.fileName||'请先选择本地音频')
@@ -157,6 +270,11 @@ function renderTracks(){
       :t.kind==='stream'?'自然流水纹理'
       :'平稳的宽频背景声';
     const panFill=Math.round((t.pan+100)/2);
+    const hpFill=Math.round((t.highpassHz-TONE_CONFIG.highpassMinHz)/
+      (TONE_CONFIG.highpassMaxHz-TONE_CONFIG.highpassMinHz)*100);
+    const toneFill=Math.round((t.trebleDb-TONE_CONFIG.trebleMinDb)/
+      (TONE_CONFIG.trebleMaxDb-TONE_CONFIG.trebleMinDb)*100);
+    const trebleText=(t.trebleDb>0?'+':'')+t.trebleDb+' dB';
     return `<section class="track-card ${t.mute?'is-muted':''}" data-track="${safe(t.id)}"
       style="--track-color:${COLORS[i%COLORS.length]}">
       <div class="track-mainline">
@@ -170,6 +288,9 @@ function renderTracks(){
             <svg><use href="#i-solo"/></svg></button>
           <button type="button" data-track-action="duplicate" title="复制音轨" aria-label="复制音轨">
             <svg><use href="#i-copy"/></svg></button>
+          ${t.kind==='file'?'':`<button type="button" data-track-action="reseed"
+            title="换一段同类型的声音" aria-label="换一段声音">
+            <svg><use href="#i-shuffle"/></svg></button>`}
           <button type="button" data-track-action="remove" class="delete" title="删除音轨" aria-label="删除音轨">
             <svg><use href="#i-trash"/></svg></button>
         </div>
@@ -191,7 +312,7 @@ function renderTracks(){
         </div>
       </div>
       <details class="track-advanced">
-        <summary>精细参数 · 声音类型与滤波</summary>
+        <summary>精细参数 · 音色与滤波</summary>
         <div class="track-extra">
           <label class="full">声音来源
             <select data-prop="kind">${Object.entries(TYPES).map(([v,name])=>
@@ -199,17 +320,32 @@ function renderTracks(){
           </label>
           ${t.kind==='file'?`<label class="full file-picker">选择本地音频（仅本机处理）
             <input type="file" data-file="1" accept="audio/*,.wav,.mp3,.m4a,.ogg" hidden></label>`:''}
+          ${['band','notch'].includes(t.kind)?`
           <label>中心频率 (Hz)
-            <input type="number" data-prop="freq" min="250" max="8000" step="50"
-              value="${Math.round(t.freq)}" ${!['band','notch'].includes(t.kind)?'disabled':''}>
+            <input type="number" data-prop="freq" min="250" max="8000" step="50" value="${Math.round(t.freq)}">
           </label>
           <label>频带宽度 (oct)
-            <input type="number" data-prop="bw" min="0.2" max="3" step="0.1"
-              value="${t.bw}" ${!['band','notch'].includes(t.kind)?'disabled':''}>
+            <input type="number" data-prop="bw" min="0.2" max="3" step="0.1" value="${t.bw}">
+          </label>`:''}
+          <label><span>缓慢起伏 <small data-label="motionDepth">${Math.round(t.motionDepth)}%</small></span>
+            <input type="range" data-prop="motionDepth" min="0" max="100" step="5"
+              value="${t.motionDepth}" style="--fill:${Math.round(t.motionDepth)}%" aria-label="缓慢起伏强度">
+          </label>
+          <label><span>低切频率 (Hz) <small data-label="highpassHz">${Math.round(t.highpassHz)}</small></span>
+            <input type="range" data-prop="highpassHz" min="${TONE_CONFIG.highpassMinHz}"
+              max="${TONE_CONFIG.highpassMaxHz}" step="20" value="${t.highpassHz}"
+              style="--fill:${hpFill}%" aria-label="低切频率">
+          </label>
+          <label><span>明暗 (dB) <small data-label="trebleDb">${trebleText}</small></span>
+            <input type="range" data-prop="trebleDb" min="${TONE_CONFIG.trebleMinDb}"
+              max="${TONE_CONFIG.trebleMaxDb}" step="1" value="${t.trebleDb}"
+              style="--fill:${toneFill}%" aria-label="高频明暗">
           </label>
           <label class="full">柔化低通频率 (Hz)
             <input type="number" data-prop="cutoff" min="1000" max="14000" step="250" value="${t.cutoff}">
           </label>
+          <p class="track-hint">起伏让声音缓慢呼吸，减少固定循环带来的重复感；低切去掉隆隆的低频；明暗只调高频，
+            不改变数字增益。中心频率与带宽只对窄带 / 陷波生效，其他声源会自动隐藏。</p>
         </div>
         ${t.kind==='notch'?'<div class="track-hint">陷波模式属于探索性滤波，不是经验证的专属耳鸣治疗。</div>':''}
         ${['band','notch'].includes(t.kind)?`<canvas class="filter-plot" data-filter-plot aria-label="滤波器频率响应"></canvas>
@@ -217,6 +353,11 @@ function renderTracks(){
       </details>
     </section>`;
   }).join('');
+  for(const card of container.querySelectorAll('[data-track]')){
+    if(!expanded.has(card.dataset.track))continue;
+    const panel=card.querySelector('.track-advanced');
+    if(panel)panel.open=true;
+  }
   drawFilterPlots();
   readSettingsToUI();
   persist();
@@ -237,7 +378,19 @@ function setPage(next){
   if(next==='home'){spectrumDirty=true;queueSpectrum()}
   window.scrollTo({top:0,behavior:'instant'});
 }
-function applyPreset(id){let p=PRESETS.find(x=>x.id===id);if(!p)return;stop(true);settings.tracks=tracksFor(p);settings.activeId=p.id;settings.activeName=p.name;files.clear();elapsed=0;renderQuick();renderTracks();setPage('home');notify('已加载「'+p.name+'」，请从低音量试听')}
+function applyPreset(id){
+  const p=PRESETS.find(x=>x.id===id);
+  if(!p)return;
+  stop(true);
+  settings.tracks=tracksFor(p);
+  settings.activeId=p.id;
+  settings.activeName=p.name;
+  files.clear();
+  elapsed=0;
+  renderQuick();renderTracks();setPage('home');
+  persist();pushMixHistory();
+  notify('已加载「'+p.name+'」，请从低音量试听');
+}
 function renderPresets(){
   const icons={moon:'#i-moon',forest:'#i-wave',leaf:'#i-freq',rain:'#i-rain',band:'#i-freq',stream:'#i-layers'};
   const chips=$('categoryChips');
@@ -272,7 +425,17 @@ function renderPresets(){
     </button>
   </div>`).join(''):'<div class="empty">还没有个人方案。调好混音后点「保存当前组合」。</div>';
 }
-function loadCustom(name){const p=profiles[name];if(!p)return;stop(true);files.clear();settings={...settings,...p.settings,tracks:(p.settings?.tracks||[]).map(validTrack),activeName:name,activeId:'custom'};elapsed=0;renderTracks();renderQuick();setPage('home');notify('已加载个人方案：'+name)}
+function loadCustom(name){
+  const p=profiles[name];
+  if(!p)return;
+  stop(true);
+  files.clear();
+  settings={...settings,...p.settings,tracks:(p.settings?.tracks||[]).map(validTrack),activeName:name,activeId:'custom'};
+  elapsed=0;
+  renderTracks();renderQuick();setPage('home');
+  persist();pushMixHistory();
+  notify('已加载个人方案：'+name);
+}
 function saveProfile(){openDialog('保存混音方案',`<div class="dialog-body"><label>方案名称<input id="profileInput" maxlength="35" placeholder="例如：我的睡前雨声" value="${safe(settings.activeId==='custom'?settings.activeName:'')}"></label><p class="dialog-info">会保存所有音轨的声音类型、频率、位置和增益等设置。自选音频文件只保留名称，重新打开时需重新选择文件。</p></div>`,[{text:'取消',fn:closeDialog},{text:'保存方案',primary:true,fn:()=>{let name=$('profileInput').value.trim().slice(0,35);if(!name)return notify('请填写名称');if(Object.keys(profiles).length>=30&&!profiles[name])return notify('最多保存30个方案');profiles[name]={name,createdAt:new Date().toISOString(),settings:{...settings,tracks:settings.tracks.map(x=>({...x}))}};settings.activeName=name;settings.activeId='custom';persist();renderQuick();readSettingsToUI();closeDialog();notify('已保存：'+name)}}])}
 function dayKey(v){const d=new Date(v);if(Number.isNaN(+d))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 function friendlyDate(v){const d=new Date(v);return Number.isNaN(+d)?'未知日期':`${d.getMonth()+1}月${d.getDate()}日`}
@@ -478,10 +641,122 @@ function trackGain(t){return eligible(t)?trackGainOf(t.level,nAudible()):0}
 function noiseBuffer(ctx,kind,seed){const key=kind+'|'+seed+'|'+ctx.sampleRate;const hit=noiseCache.get(key);if(hit){noiseCache.delete(key);noiseCache.set(key,hit);return hit}const length=noiseLength(kind,ctx.sampleRate),bytes=length*2*4;const buf=ctx.createBuffer(2,length,ctx.sampleRate);buf.getChannelData(0).set(fillNoise(kind,length,ctx.sampleRate,seed,0));buf.getChannelData(1).set(fillNoise(kind,length,ctx.sampleRate,seed,1));while(noiseCacheBytes+bytes>NOISE_CACHE_BYTES&&noiseCache.size){const [oldKey,oldBuf]=noiseCache.entries().next().value;noiseCache.delete(oldKey);noiseCacheBytes-=oldBuf.length*2*4}noiseCache.set(key,buf);noiseCacheBytes+=bytes;return buf}
 function param(p,v,ctx,sec=.1){const now=ctx.currentTime;p.cancelScheduledValues(now);const start=p.value;p.setValueAtTime(start,now);const end=now+Math.max(.02,sec);if(Math.abs(start-v)<1e-6)p.setValueAtTime(v,end);else p.linearRampToValueAtTime(v,end)}
 function buildGraph(ctx){const bus=ctx.createGain(),inputAnalyser=ctx.createAnalyser(),compress=ctx.createDynamicsCompressor(),master=ctx.createGain(),safety=ctx.createGain(),limiter=ctx.createDynamicsCompressor(),analyser=ctx.createAnalyser(),split=ctx.createChannelSplitter(2),peakL=ctx.createAnalyser(),peakR=ctx.createAnalyser(),sink=ctx.createGain();compress.threshold.value=AUDIO_CONFIG.compressorThreshold;compress.knee.value=AUDIO_CONFIG.compressorKnee;compress.ratio.value=AUDIO_CONFIG.compressorRatio;compress.attack.value=.004;compress.release.value=.27;limiter.threshold.value=AUDIO_CONFIG.limiterThreshold;limiter.knee.value=0;limiter.ratio.value=20;limiter.attack.value=.002;limiter.release.value=.08;safety.gain.value=1;sink.gain.value=0;analyser.fftSize=2048;inputAnalyser.fftSize=1024;peakL.fftSize=1024;peakR.fftSize=1024;inputAnalyser.smoothingTimeConstant=0;peakL.smoothingTimeConstant=0;peakR.smoothingTimeConstant=0;bus.connect(inputAnalyser);inputAnalyser.connect(compress);compress.connect(master);master.connect(safety);safety.connect(limiter);limiter.connect(analyser);analyser.connect(ctx.destination);safety.connect(split);split.connect(peakL,0);split.connect(peakR,1);peakL.connect(sink);peakR.connect(sink);sink.connect(ctx.destination);return {ctx,bus,inputAnalyser,compress,master,safety,limiter,analyser,peakL,peakR,voices:new Map(),cache:new Map(),meters:{inputPeak:0,outputPeak:0,reduction:0,protection:false,strikes:0},timeBuf:new Float32Array(1024)}}
-function makeVoice(e,t,offline=false){const {ctx,bus,cache}=e,spec=voiceSpec(t,nAudible());let buf;if(t.kind==='file'){buf=files.get(t.id)?.buffer;if(!buf)return null}else{const seed=[...t.id].reduce((h,ch)=>(h*31+ch.charCodeAt(0))|0,0);buf=noiseBuffer(ctx,spec.source,seed)}const src=ctx.createBufferSource();src.buffer=buf;src.loop=true;let path=src,filter=null;if(spec.filter){filter=ctx.createBiquadFilter();filter.type=spec.filter;filter.frequency.value=spec.frequency;filter.Q.value=spec.Q;path.connect(filter);path=path===src?filter:path;path=filter}const low=ctx.createBiquadFilter();low.type='lowpass';low.frequency.value=spec.cutoff;low.Q.value=.707;path.connect(low);const gain=ctx.createGain();gain.gain.value=offline?trackGain(t):0;low.connect(gain);const pan=ctx.createStereoPanner();pan.pan.value=spec.pan;gain.connect(pan);pan.connect(bus);src.start();return {src,gain,pan,filter,low,stop(){try{src.stop()}catch{/*重复 stop 抛 InvalidStateError，音源本就已停*/}try{src.disconnect();low.disconnect();gain.disconnect();pan.disconnect();filter?.disconnect()}catch{/*节点可能已被断开，重复 disconnect 会抛错*/}}}}
+function makeVoice(e,t,offline=false){
+  const {ctx,bus}=e;
+  const spec=voiceSpec(t,nAudible());
+  let buf;
+  if(t.kind==='file'){
+    buf=files.get(t.id)?.buffer;
+    if(!buf)return null;
+  }else{
+    buf=noiseBuffer(ctx,spec.source,spec.seed);
+  }
+  const src=ctx.createBufferSource();
+  src.buffer=buf;
+  src.loop=true;
+  let path=src,filter=null;
+  if(spec.filter){
+    filter=ctx.createBiquadFilter();
+    filter.type=spec.filter;
+    filter.frequency.value=spec.frequency;
+    filter.Q.value=spec.Q;
+    path.connect(filter);
+    path=filter;
+  }
+  // 以下新增节点全部在 bus → limiter 之前；outputAnalyser 观测的仍是未被压平的信号。
+  // 建图期直接赋初值是安全的：src.start() 放在最后，此时还没有信号流过。
+  const hp=ctx.createBiquadFilter();
+  hp.type='highpass';
+  hp.frequency.value=spec.highpassHz;
+  hp.Q.value=.707;
+  path.connect(hp);
+  const low=ctx.createBiquadFilter();
+  low.type='lowpass';
+  low.frequency.value=spec.cutoff;
+  low.Q.value=.707;
+  hp.connect(low);
+  const shelf=ctx.createBiquadFilter();
+  shelf.type='highshelf';
+  shelf.frequency.value=spec.trebleShelfHz;
+  shelf.gain.value=spec.trebleDb;
+  low.connect(shelf);
+  const gain=ctx.createGain();
+  gain.gain.value=offline?trackGain(t):0;
+  shelf.connect(gain);
+  // 起伏用独立节点承载，避免 LFO 与 level 的 param() 平滑争用同一个 AudioParam。
+  const motion=ctx.createGain();
+  motion.gain.value=1;
+  gain.connect(motion);
+  const lfo=ctx.createOscillator();
+  lfo.type='sine';
+  lfo.frequency.value=spec.motionRateHz*(1+(spec.seed%5)*.12);
+  const lfoGain=ctx.createGain();
+  lfoGain.gain.value=spec.motionAmplitude;
+  lfo.connect(lfoGain);
+  lfoGain.connect(motion.gain);
+  const pan=ctx.createStereoPanner();
+  pan.pan.value=spec.pan;
+  motion.connect(pan);
+  pan.connect(bus);
+  src.start();
+  lfo.start();
+  return {
+    src,gain,pan,filter,low,hp,shelf,motion,lfo,lfoGain,
+    stop(){
+      try{src.stop()}catch{/*重复 stop 抛 InvalidStateError，音源本就已停*/}
+      try{lfo.stop()}catch{/*震荡器可能已停止，忽略*/}
+      try{
+        src.disconnect();filter?.disconnect();hp.disconnect();low.disconnect();
+        shelf.disconnect();gain.disconnect();motion.disconnect();pan.disconnect();
+        lfo.disconnect();lfoGain.disconnect();
+      }catch{/*节点可能已被断开，重复 disconnect 会抛错*/}
+    }
+  };
+}
+function rebuildVoices(){
+  if(!engine)return;
+  for(const v of engine.voices.values()){
+    param(v.gain.gain,0,engine.ctx,REPLACE_FADE.old);
+    // 无条件 stop：即使期间用户按了停止，旧 voice 也不该继续挂在已断开的图上。
+    setTimeout(()=>v.stop(),(REPLACE_FADE.old+.05)*1000);
+  }
+  engine.voices.clear();
+  voicesBuild(engine);
+}
 function voicesBuild(e,offline=false){for(const t of settings.tracks){const v=makeVoice(e,t,offline);if(v){e.voices.set(t.id,v);if(!offline)param(v.gain.gain,trackGain(t),e.ctx,.24)}}}
 function changeGains(exceptId){if(!engine)return;for(const t of settings.tracks){if(t.id===exceptId)continue;const v=engine.voices.get(t.id);if(v)param(v.gain.gain,trackGain(t),engine.ctx,.13)}}
-function changeTrack(t,prop){if(!engine)return;const v=engine.voices.get(t.id);if(prop==='kind'||prop==='file'){if(v){engine.voices.delete(t.id);param(v.gain.gain,0,engine.ctx,REPLACE_FADE.old);const token=epoch;setTimeout(()=>{if(token===epoch)v.stop()},(REPLACE_FADE.old+.05)*1000)}const nv=makeVoice(engine,t,false);if(nv){engine.voices.set(t.id,nv);const token=epoch;setTimeout(()=>{if(token!==epoch||!engine||engine.voices.get(t.id)!==nv)return;param(nv.gain.gain,trackGain(t),engine.ctx,REPLACE_FADE.fade)},REPLACE_FADE.delay*1000)}changeGains(t.id);return}if(!v)return;if(prop==='level'||prop==='mute'||prop==='solo')changeGains();if(prop==='pan')param(v.pan.pan,t.pan/100,engine.ctx);if(prop==='freq'&&v.filter)param(v.filter.frequency,t.freq,engine.ctx);if(prop==='bw'&&v.filter)param(v.filter.Q,octQ(t.bw),engine.ctx);if(prop==='cutoff')param(v.low.frequency,t.cutoff,engine.ctx)}
+function changeTrack(t,prop){
+  if(!engine)return;
+  const v=engine.voices.get(t.id);
+  // seed 改变等于换一段噪声样本，与换声源一样需要交叉淡化重建。
+  if(prop==='kind'||prop==='file'||prop==='seed'){
+    if(v){
+      engine.voices.delete(t.id);
+      param(v.gain.gain,0,engine.ctx,REPLACE_FADE.old);
+      setTimeout(()=>v.stop(),(REPLACE_FADE.old+.05)*1000);
+    }
+    const nv=makeVoice(engine,t,false);
+    if(nv){
+      engine.voices.set(t.id,nv);
+      const token=epoch;
+      setTimeout(()=>{
+        if(token!==epoch||!engine||engine.voices.get(t.id)!==nv)return;
+        param(nv.gain.gain,trackGain(t),engine.ctx,REPLACE_FADE.fade);
+      },REPLACE_FADE.delay*1000);
+    }
+    changeGains(t.id);
+    return;
+  }
+  if(!v)return;
+  if(prop==='level'||prop==='mute'||prop==='solo')changeGains();
+  if(prop==='pan')param(v.pan.pan,t.pan/100,engine.ctx);
+  if(prop==='freq'&&v.filter)param(v.filter.frequency,t.freq,engine.ctx);
+  if(prop==='bw'&&v.filter)param(v.filter.Q,octQ(t.bw),engine.ctx);
+  if(prop==='cutoff')param(v.low.frequency,t.cutoff,engine.ctx);
+  if(prop==='highpassHz')param(v.hp.frequency,t.highpassHz,engine.ctx);
+  if(prop==='trebleDb')param(v.shelf.gain,t.trebleDb,engine.ctx);
+  if(prop==='motionDepth')param(v.lfoGain.gain,voiceSpec(t,nAudible()).motionAmplitude,engine.ctx);
+}
 function readTimes(){const now=performance.now(),ctxTime=audioContext?audioContext.currentTime:0,running=!!(audioContext&&audioContext.state==='running'&&(playerState==='PLAYING'||playerState==='PAUSING'));clock.noteAudio(ctxTime,running);return {player:clock.playerSeconds(now),audio:clock.audioSeconds(ctxTime,running),confirmed:clock.confirmedSeconds(now,ctxTime,running)}}
 function updateClock(opts={}){if(playerState==='PLAYING'||playerState==='PAUSING'){const times=readTimes();if(session){session.playerSeconds=times.player;session.audioSeconds=times.audio;session.confirmedSeconds=times.confirmed}elapsed=times.confirmed;if(!opts.skipLimit&&playerState==='PLAYING'&&elapsed>=settings.duration*60){elapsed=settings.duration*60;endPlayback(false,'completed');return}}readSettingsToUI()}
 async function startPlayback(){return enqueue(async()=>{try{if(playerState==='PLAYING'||playerState==='STARTING')return;if(!settings.tracks.some(eligible)){notify('请先启用至少一条音轨');return}ensureContext();if(!canTransition(playerState,'STARTING'))return;playerState='STARTING';readSettingsToUI();await audioContext.resume();if(playerState!=='STARTING')return;if(audioContext.state!=='running')throw new Error('音频设备未能启动');if(engine&&engine.ctx===audioContext){clock.startPlayer(performance.now());clock.noteAudio(audioContext.currentTime,true);param(engine.master.gain,masterGain(),audioContext,.15);playerState='PLAYING';startProtectionMonitor();requestWakeLock();readSettingsToUI();return}engine=buildGraph(audioContext);voicesBuild(engine);engine.master.gain.value=0;param(engine.master.gain,masterGain(),audioContext,settings.fadeIn||0);beginSession();playerState='PLAYING';startProtectionMonitor();requestWakeLock();readSettingsToUI();notify('开始播放。数字增益不是声压级，请保持舒适的低音量')}catch(err){const failed=engine;engine=null;session=null;clock.reset();stopProtectionMonitor();releaseWakeLock();if(playerState==='STARTING')playerState='ERROR';if(failed){for(const v of failed.voices.values())v.stop()}notify('播放失败：'+(err.message||'未知错误'));readSettingsToUI();setTimeout(()=>{if(playerState==='ERROR'){playerState='IDLE';readSettingsToUI()}},1200)}})}
@@ -542,7 +817,7 @@ function drawFilterPlot(canvas,track){
 }
 function drawFilterPlots(){for(const canvas of $$('[data-filter-plot]')){const card=canvas.closest('[data-track]');const t=settings.tracks.find(x=>x.id===card?.dataset.track);if(t)drawFilterPlot(canvas,t)}}
 function download(blob,name){const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),10000)}
-async function exportWav(sec){if(exporting)return;const mobile=matchMedia('(pointer: coarse)').matches||/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);const allowance=exportAllowance(sec,{deviceMemory:navigator.deviceMemory||8,mobile});if(!allowance.ok){notify(allowance.reason);return}if(!settings.tracks.some(eligible)){notify('没有可用的声音轨道');return}const O=window.OfflineAudioContext||window.webkitOfflineAudioContext;if(!O){notify('浏览器不支持离线导出');return}exporting=true;const button=$('exportWav');button.disabled=true;button.textContent='导出中…';try{const sr=44100,ctx=new O(2,sr*sec,sr),graph=buildGraph(ctx);voicesBuild(graph,true);const fade=Math.min(settings.fadeIn,sec/3),tail=Math.min(settings.fadeOut,sec/3),volume=masterGain();graph.master.gain.setValueAtTime(fade?0:volume,0);if(fade)graph.master.gain.linearRampToValueAtTime(volume,fade);graph.master.gain.setValueAtTime(volume,Math.max(fade,sec-tail));if(tail)graph.master.gain.linearRampToValueAtTime(0,sec);const steps=Math.max(1,Math.round(sec/5));for(let i=1;i<steps;i++)ctx.suspend(sec*i/steps).then(()=>{button.textContent=`导出中 ${Math.round(100*i/steps)}%`;return ctx.resume()});const rendered=await ctx.startRendering();const left=rendered.getChannelData(0),right=rendered.getChannelData(1);const analysis=analyzeChannels([left,right],sr);const verdict=assessExport(analysis);if(!verdict.ok)throw new Error(verdict.reason);const blob=new Blob([encodeWav(left,right,sr)],{type:'audio/wav'});download(blob,`Tinglan-Mix-v4.1-${sec}s.wav`);notify(`已导出混音（${(blob.size/1048576).toFixed(1)} MB，峰值 ${(20*Math.log10(Math.max(analysis.peak,1e-8))).toFixed(1)} dBFS）`)}catch(err){notify('导出失败：'+err.message)}finally{exporting=false;button.disabled=false;button.textContent='导出混音 WAV'}}
+async function exportWav(sec){if(exporting)return;const mobile=matchMedia('(pointer: coarse)').matches||/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);const allowance=exportAllowance(sec,{deviceMemory:navigator.deviceMemory||8,mobile});if(!allowance.ok){notify(allowance.reason);return}if(!settings.tracks.some(eligible)){notify('没有可用的声音轨道');return}const O=window.OfflineAudioContext||window.webkitOfflineAudioContext;if(!O){notify('浏览器不支持离线导出');return}exporting=true;const button=$('exportWav');button.disabled=true;button.textContent='导出中…';try{const sr=44100,ctx=new O(2,sr*sec,sr),graph=buildGraph(ctx);voicesBuild(graph,true);const fade=Math.min(settings.fadeIn,sec/3),tail=Math.min(settings.fadeOut,sec/3),volume=masterGain();graph.master.gain.setValueAtTime(fade?0:volume,0);if(fade)graph.master.gain.linearRampToValueAtTime(volume,fade);graph.master.gain.setValueAtTime(volume,Math.max(fade,sec-tail));if(tail)graph.master.gain.linearRampToValueAtTime(0,sec);const steps=Math.max(1,Math.round(sec/5));for(let i=1;i<steps;i++)ctx.suspend(sec*i/steps).then(()=>{button.textContent=`导出中 ${Math.round(100*i/steps)}%`;return ctx.resume()});const rendered=await ctx.startRendering();const left=rendered.getChannelData(0),right=rendered.getChannelData(1);const analysis=analyzeChannels([left,right],sr);const verdict=assessExport(analysis);if(!verdict.ok)throw new Error(verdict.reason);const blob=new Blob([encodeWav(left,right,sr)],{type:'audio/wav'});download(blob,`Tinglan-Mix-v${APP_VERSION}-${sec}s.wav`);notify(`已导出混音（${(blob.size/1048576).toFixed(1)} MB，峰值 ${(20*Math.log10(Math.max(analysis.peak,1e-8))).toFixed(1)} dBFS）`)}catch(err){notify('导出失败：'+err.message)}finally{exporting=false;button.disabled=false;button.textContent='导出混音 WAV'}}
 function wavDialog(){openDialog('导出混音 WAV',`<div class="dialog-body"><label>导出时长<select id="wavSeconds"><option value="10">10秒（快速试听）</option><option value="30">30秒</option><option value="60">60秒</option><option value="120">120秒</option></select></label><p class="dialog-info">导出使用与播放相同的滤波、声相、压缩和峰值保护，格式为 44.1 kHz / 16-bit / 双声道。检测到削波时会取消导出，而不是悄悄截断。输出不是声压级，试听前先调低设备音量。内存较小的设备会限制时长。</p></div>`,[{text:'取消',fn:closeDialog},{text:'开始导出',primary:true,fn:()=>{const n=Number($('wavSeconds').value);closeDialog();exportWav(n)}}])}
 function backup(){const obj={version:4,app:APP_VERSION,savedAt:new Date().toISOString(),settings,profiles,logs,sessions,favorites,person,note:'本地音频文件本身不会包含在备份中。播放时长是确认出声时间。'};download(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),'Tinglan-v4-backup.json')}
 async function importBackup(file){if(!file)return;try{if(file.size>8e6)throw Error('备份文件大于 8MB');const d=JSON.parse(await file.text());const result=validateBackup(d);if(!result.ok)throw Error(result.errors[0]);if(!confirm('确定导入备份？这会覆盖本机已有的混音设置与记录。'))return;await stop(true);const data=result.data;settings={...fallback,...data.settings,tracks:data.settings.tracks.map(validTrack)};profiles=data.profiles;logs=data.logs.map(x=>({...x,id:x.id||uid()}));sessions=data.sessions.map(x=>({...x,id:x.id||uid()}));favorites=data.favorites;person=data.person;files.clear();elapsed=0;if(idbOk&&dbPromise){try{await idbReplace(await dbPromise,logs,sessions);recordChannel?.postMessage({type:'records-changed'})}catch{notify('记录写入数据库失败，已保留在内存中')}}persistNow();renderQuick();renderTracks();renderStats();setPage('home');notify(result.dropped?`备份已恢复，跳过了 ${result.dropped} 条无法校验的记录`:'备份已恢复，本地上传音频需要重新选择')}catch(e){notify('导入失败：'+e.message)}finally{$('importBackup').value=''}}
@@ -552,12 +827,135 @@ function playbackSettingsDialog(){setPage('home');setTimeout(()=>$('masterVolume
 function fileDialog(){openDialog('我的耳鸣档案',`<div class="dialog-body"><p class="dialog-info">以下信息只保存在当前浏览器，不会上传到服务器。可用于就诊时回顾情况。</p><label>耳鸣匹配频率（自述）<input id="tinnFreq" maxlength="60" value="${safe(person.tinnitus||'')}" placeholder="例如 双侧4000 Hz"></label><label>当前入睡情况（自述）<input id="sleepPref" maxlength="80" value="${safe(person.sleepPreference||'')}" placeholder="例如 入睡需要1–2小时"></label><label>其他备注<textarea id="tinnNote" maxlength="500">${safe(person.note||'',500)}</textarea></label></div>`,[{text:'取消',fn:closeDialog},{text:'保存档案',primary:true,fn:()=>{person.tinnitus=$('tinnFreq').value.slice(0,60);person.sleepPreference=$('sleepPref').value.slice(0,80);person.note=$('tinnNote').value.slice(0,500);persist();closeDialog();notify('耳鸣档案已保存在本机')}}])}
 // Event wiring
 $$('.tab').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.page)));
-document.addEventListener('click',e=>{lastTrigger=e.target.closest('button,label,a')||lastTrigger;const preset=e.target.closest('[data-preset]');if(preset){applyPreset(preset.dataset.preset);return}const pg=e.target.closest('[data-page-link]');if(pg){setPage(pg.dataset.pageLink);return}const fav=e.target.closest('[data-favorite]');if(fav){const id=fav.dataset.favorite;favorites=favorites.includes(id)?favorites.filter(x=>x!==id):[...favorites,id];persist();renderPresets();return}const ct=e.target.closest('[data-category]');if(ct){selectedCategory=ct.dataset.category;renderPresets();return}const custom=e.target.closest('[data-custom-load]');if(custom){loadCustom(custom.dataset.customLoad);return}const del=e.target.closest('[data-custom-delete]');if(del){const name=del.dataset.customDelete;if(confirm(`确定删除“${name}”吗？`)){delete profiles[name];persist();renderPresets()}return}const logDel=e.target.closest('[data-delete-log]');if(logDel){if(confirm('确定删除这条自评记录吗？')){const removed=logDel.dataset.deleteLog;logs=logs.filter(x=>x.id!==removed);deleteRecord('logs',removed);persist();renderRecords();renderStats()}return}const action=e.target.closest('[data-action]');if(action){const a=action.dataset.action;if(a==='openJournal')openJournal();if(a==='newMix'){stop(true);settings.tracks=[track('pink',27)];settings.activeName='未命名混音';settings.activeId='custom';elapsed=0;files.clear();renderTracks();renderQuick();setPage('home')}if(a==='playbackSettings')playbackSettingsDialog();if(a==='tinnitusFile')fileDialog();if(a==='exportBackup')backup();if(a==='help')aboutDialog();if(a==='clearData'&&confirm('确定清除全部本机记录和个人方案吗？此操作无法撤销，建议先导出备份。')){if(confirm('再次确认：真的要删除所有个人数据吗？')){stop(true);localStorage.removeItem(KEY);profiles={};logs=[];sessions=[];favorites=[];person={name:'听澜用户',tinnitus:'',sleepPreference:'',note:''};settings={...fallback,tracks:tracksFor(PRESETS[0])};if(idbOk&&dbPromise)dbPromise.then(db=>idbReplace(db,[],[]).then(()=>Promise.all([idbDeleteKey(db,'logs'),idbDeleteKey(db,'sessions')]))).then(()=>recordChannel?.postMessage({type:'records-changed'})).catch(()=>{});persistNow();renderQuick();renderTracks();renderStats();renderMe();notify('已清除本地个人记录')}}return}});
-$('playBtn').addEventListener('click',()=>playerState==='PLAYING'?pausePlayback():startPlayback());$('discomfortBtn').addEventListener('click',()=>endPlayback(false,'discomfort'));$('stopBtn').addEventListener('click',()=>stop());$('addTrack').addEventListener('click',()=>{if(settings.tracks.length>=6)return notify('最多允许6条音轨');settings.tracks.push(track('pink',25));settings.activeName='自定义混音';settings.activeId='custom';const created=settings.tracks.at(-1);renderTracks();renderQuick();if(engine&&['PLAYING','PAUSED','PAUSING'].includes(playerState)){const v=makeVoice(engine,created);if(v){engine.voices.set(created.id,v);param(v.gain.gain,trackGain(created),engine.ctx,.22);changeGains()}}noteParam('tracks',settings.tracks.map(item=>item.kind))});$('saveMix').addEventListener('click',saveProfile);$('exportWav').addEventListener('click',wavDialog);$('topHelp').addEventListener('click',aboutDialog);
+document.addEventListener('click',e=>{lastTrigger=e.target.closest('button,label,a')||lastTrigger;const preset=e.target.closest('[data-preset]');if(preset){applyPreset(preset.dataset.preset);return}const pg=e.target.closest('[data-page-link]');if(pg){setPage(pg.dataset.pageLink);return}const fav=e.target.closest('[data-favorite]');if(fav){const id=fav.dataset.favorite;favorites=favorites.includes(id)?favorites.filter(x=>x!==id):[...favorites,id];persist();renderPresets();return}const ct=e.target.closest('[data-category]');if(ct){selectedCategory=ct.dataset.category;renderPresets();return}const custom=e.target.closest('[data-custom-load]');if(custom){loadCustom(custom.dataset.customLoad);return}const del=e.target.closest('[data-custom-delete]');if(del){const name=del.dataset.customDelete;if(confirm(`确定删除“${name}”吗？`)){delete profiles[name];persist();renderPresets()}return}const logDel=e.target.closest('[data-delete-log]');if(logDel){if(confirm('确定删除这条自评记录吗？')){const removed=logDel.dataset.deleteLog;logs=logs.filter(x=>x.id!==removed);deleteRecord('logs',removed);persist();renderRecords();renderStats()}return}const action=e.target.closest('[data-action]');if(action){const a=action.dataset.action;if(a==='openJournal')openJournal();if(a==='newMix'){stop(true);settings.tracks=[track('pink',27)];settings.activeName='未命名混音';settings.activeId='custom';elapsed=0;files.clear();renderTracks();renderQuick();setPage('home');persist();pushMixHistory()}if(a==='playbackSettings')playbackSettingsDialog();if(a==='tinnitusFile')fileDialog();if(a==='exportBackup')backup();if(a==='help')aboutDialog();if(a==='clearData'&&confirm('确定清除全部本机记录和个人方案吗？此操作无法撤销，建议先导出备份。')){if(confirm('再次确认：真的要删除所有个人数据吗？')){stop(true);localStorage.removeItem(KEY);profiles={};logs=[];sessions=[];favorites=[];person={name:'听澜用户',tinnitus:'',sleepPreference:'',note:''};settings={...fallback,tracks:tracksFor(PRESETS[0])};if(idbOk&&dbPromise)dbPromise.then(db=>idbReplace(db,[],[]).then(()=>Promise.all([idbDeleteKey(db,'logs'),idbDeleteKey(db,'sessions')]))).then(()=>recordChannel?.postMessage({type:'records-changed'})).catch(()=>{});persistNow();renderQuick();renderTracks();renderStats();renderMe();notify('已清除本地个人记录')}}return}});
+$('playBtn').addEventListener('click',()=>playerState==='PLAYING'?pausePlayback():startPlayback());$('discomfortBtn').addEventListener('click',()=>endPlayback(false,'discomfort'));$('stopBtn').addEventListener('click',()=>stop());$('addTrack').addEventListener('click',()=>{
+  if(settings.tracks.length>=6)return notify('最多允许6条音轨');
+  settings.tracks.push(track('pink',25));
+  settings.activeName='自定义混音';
+  settings.activeId='custom';
+  const created=settings.tracks.at(-1);
+  renderTracks();
+  renderQuick();
+  if(engine&&['PLAYING','PAUSED','PAUSING'].includes(playerState)){
+    const v=makeVoice(engine,created);
+    if(v){engine.voices.set(created.id,v);param(v.gain.gain,trackGain(created),engine.ctx,.22);changeGains()}
+  }
+  noteParam('tracks',settings.tracks.map(item=>item.kind));
+  persist();
+  pushMixHistory();
+});$('saveMix').addEventListener('click',saveProfile);$('exportWav').addEventListener('click',wavDialog);$('topHelp').addEventListener('click',aboutDialog);
 $('duration').addEventListener('change',e=>{settings.duration=clamp(e.target.value,15,90);noteParam('duration',settings.duration);if(elapsed>settings.duration*60)stop();readSettingsToUI();persist()});for(let id of ['fadeIn','fadeOut'])$(id).addEventListener('change',e=>{settings[id]=clamp(e.target.value,0,10);noteParam(id,settings[id]);persist()});$('masterVolume').addEventListener('input',e=>{settings.volume=clamp(e.target.value,0,100);if(engine)param(engine.master.gain,playerState==='PLAYING'?masterGain():0,engine.ctx,.15);readSettingsToUI();persist()});$('masterVolume').addEventListener('change',()=>noteParam('volume',settings.volume));
-$('trackList').addEventListener('click',e=>{const btn=e.target.closest('[data-track-action]');if(!btn)return;const card=btn.closest('[data-track]'),t=settings.tracks.find(x=>x.id===card?.dataset.track);if(!t)return;const a=btn.dataset.trackAction;if(a==='mute'){t.mute=!t.mute;changeGains()}if(a==='solo'){t.solo=!t.solo;changeGains()}if(a==='remove'){if(settings.tracks.length===1)return notify('请至少保留一条轨道');if(engine){const v=engine.voices.get(t.id);if(v){engine.voices.delete(t.id);param(v.gain.gain,0,engine.ctx,.12);setTimeout(()=>v.stop(),200)}}settings.tracks=settings.tracks.filter(x=>x.id!==t.id);files.delete(t.id);changeGains()}if(a==='duplicate'){if(settings.tracks.length>=6)return notify('最多允许6条轨道');const copy={...t,id:uid(),fileName:''};if(copy.kind==='file')copy.kind='pink';settings.tracks.push(copy);if(engine){const v=makeVoice(engine,copy);if(v){engine.voices.set(copy.id,v);param(v.gain.gain,trackGain(copy),engine.ctx,.22);changeGains()}}}settings.activeName='自定义混音';settings.activeId='custom';noteParam('track.'+t.id+'.'+a,{mute:t.mute,solo:t.solo,kind:t.kind});renderTracks();renderQuick()});
-$('trackList').addEventListener('input',e=>{let control=e.target,prop=control.dataset.prop;if(!prop||prop==='kind')return;const card=control.closest('[data-track]'),t=settings.tracks.find(x=>x.id===card?.dataset.track);if(!t)return;const limits={level:[0,100],pan:[-100,100],freq:[250,8000],bw:[.2,3],cutoff:[1000,14000]};if(!limits[prop])return;t[prop]=clamp(control.value,...limits[prop]);changeTrack(t,prop);const label=card.querySelector(`[data-label="${prop}"]`);if(label)label.textContent=prop==='pan'?(t.pan===0?'C':t.pan):pct(t.level);settings.activeName='自定义混音';settings.activeId='custom';readSettingsToUI();persist()});
-$('trackList').addEventListener('change',e=>{const card=e.target.closest('[data-track]'),t=settings.tracks.find(x=>x.id===card?.dataset.track);if(!t)return;if(e.target.dataset.prop==='kind'){let kind=e.target.value;if(!TYPES[kind])return;t.kind=kind;t.fileName='';files.delete(t.id);changeTrack(t,'kind');noteParam('track.'+t.id+'.kind',kind);settings.activeName='自定义混音';settings.activeId='custom';renderTracks();renderQuick()}if(e.target.dataset.file==='1')handleLocalFile(t,e.target.files[0]);if(['level','pan','freq','bw','cutoff'].includes(e.target.dataset.prop)){if(['freq','bw','cutoff'].includes(e.target.dataset.prop))e.target.value=t[e.target.dataset.prop];noteParam('track.'+t.id+'.'+e.target.dataset.prop,t[e.target.dataset.prop]);drawFilterPlots();persist()}});
+$('trackList').addEventListener('click',e=>{
+  const btn=e.target.closest('[data-track-action]');
+  if(!btn)return;
+  const card=btn.closest('[data-track]');
+  const t=settings.tracks.find(x=>x.id===card?.dataset.track);
+  if(!t)return;
+  const a=btn.dataset.trackAction;
+  if(a==='mute'){t.mute=!t.mute;changeGains()}
+  if(a==='solo'){t.solo=!t.solo;changeGains()}
+  if(a==='reseed'){
+    t.seed=nextSeed(t.seed);
+    changeTrack(t,'seed');
+    notify('已换一段同类型的声音');
+  }
+  if(a==='remove'){
+    if(settings.tracks.length===1)return notify('请至少保留一条轨道');
+    if(engine){
+      const v=engine.voices.get(t.id);
+      if(v){engine.voices.delete(t.id);param(v.gain.gain,0,engine.ctx,.12);setTimeout(()=>v.stop(),200)}
+    }
+    settings.tracks=settings.tracks.filter(x=>x.id!==t.id);
+    files.delete(t.id);
+    changeGains();
+  }
+  if(a==='duplicate'){
+    if(settings.tracks.length>=6)return notify('最多允许6条轨道');
+    const copy={...t,id:uid(),fileName:''};
+    if(copy.kind==='file')copy.kind='pink';
+    copy.seed=seedFromId(copy.id);
+    settings.tracks.push(copy);
+    if(engine){
+      const v=makeVoice(engine,copy);
+      if(v){engine.voices.set(copy.id,v);param(v.gain.gain,trackGain(copy),engine.ctx,.22);changeGains()}
+    }
+  }
+  settings.activeName='自定义混音';
+  settings.activeId='custom';
+  noteParam('track.'+t.id+'.'+a,{mute:t.mute,solo:t.solo,kind:t.kind,seed:t.seed});
+  renderTracks();
+  renderQuick();
+  persist();
+  pushMixHistory();
+});
+const MIX_LIMITS={
+  level:[0,100],pan:[-100,100],freq:[250,8000],bw:[.2,3],cutoff:[1000,14000],
+  motionDepth:[0,100],
+  highpassHz:[TONE_CONFIG.highpassMinHz,TONE_CONFIG.highpassMaxHz],
+  trebleDb:[TONE_CONFIG.trebleMinDb,TONE_CONFIG.trebleMaxDb]
+};
+function mixLabel(prop,t){
+  if(prop==='pan')return t.pan===0?'C':String(t.pan);
+  if(prop==='motionDepth')return `${Math.round(t.motionDepth)}%`;
+  if(prop==='highpassHz')return `${Math.round(t.highpassHz)} Hz`;
+  if(prop==='trebleDb')return `${t.trebleDb>0?'+':''}${t.trebleDb} dB`;
+  return pct(t.level);
+}
+$('trackList').addEventListener('input',e=>{
+  const control=e.target,prop=control.dataset.prop;
+  if(!prop||prop==='kind')return;
+  const card=control.closest('[data-track]');
+  const t=settings.tracks.find(x=>x.id===card?.dataset.track);
+  if(!t)return;
+  if(!MIX_LIMITS[prop])return;
+  t[prop]=clamp(control.value,...MIX_LIMITS[prop]);
+  changeTrack(t,prop);
+  const label=card.querySelector(`[data-label="${prop}"]`);
+  if(label)label.textContent=mixLabel(prop,t);
+  if(control.type==='range'){
+    const fill=(t[prop]-MIX_LIMITS[prop][0])/(MIX_LIMITS[prop][1]-MIX_LIMITS[prop][0])*100;
+    control.style.setProperty('--fill',`${Math.round(fill)}%`);
+  }
+  settings.activeName='自定义混音';
+  settings.activeId='custom';
+  readSettingsToUI();
+  persist();
+});
+$('trackList').addEventListener('change',e=>{
+  const card=e.target.closest('[data-track]');
+  const t=settings.tracks.find(x=>x.id===card?.dataset.track);
+  if(!t)return;
+  const prop=e.target.dataset.prop;
+  if(prop==='kind'){
+    const kind=e.target.value;
+    if(!TYPES[kind])return;
+    t.kind=kind;
+    t.fileName='';
+    files.delete(t.id);
+    changeTrack(t,'kind');
+    noteParam('track.'+t.id+'.kind',kind);
+    settings.activeName='自定义混音';
+    settings.activeId='custom';
+    renderTracks();
+    renderQuick();
+    persist();
+    pushMixHistory();
+    return;
+  }
+  if(e.target.dataset.file==='1'){
+    handleLocalFile(t,e.target.files[0]);
+    pushMixHistory();
+    return;
+  }
+  const tracked=['level','pan','freq','bw','cutoff','motionDepth','highpassHz','trebleDb'];
+  if(tracked.includes(prop)){
+    if(['freq','bw','cutoff'].includes(prop))e.target.value=t[prop];
+    noteParam('track.'+t.id+'.'+prop,t[prop]);
+    if(['freq','bw'].includes(prop))drawFilterPlots();
+    persist();
+    pushMixHistory();
+  }
+});
 $('presetSearch').addEventListener('input',e=>{search=e.target.value.trim().slice(0,70);renderPresets()});
 $('resetFilter').addEventListener('click',()=>{search='';selectedCategory='全部';$('presetSearch').value='';renderPresets()});
 $('trendSegments').addEventListener('click',e=>{
@@ -665,10 +1063,18 @@ window.addEventListener('pageshow',e=>{
   spectrumDirty=true;
   queueSpectrum();
 });
+$('undoMix').addEventListener('click',undoMix);
+$('randomMix').addEventListener('click',randomizeMix);
+$('abA').addEventListener('click',()=>switchAb('A'));
+$('abB').addEventListener('click',()=>switchAb('B'));
+$('abStore').addEventListener('click',storeAb);
 applyTheme(localStorage.getItem(THEME_KEY)==='day'?'day':'night',false);
 const today=new Date();
 $('tonightDate').textContent=`${today.getMonth()+1} 月 ${today.getDate()} 日 · 周${'日一二三四五六'[today.getDay()]}`;
+abSlots.A=mixState();
+mixHistory=[mixState()];
 renderQuick();renderTracks();renderStats();renderPresets();readSettingsToUI();setPage('home');
+updateMixerTools();
 setInterval(()=>{if(playerState==='PLAYING'||playerState==='PAUSING')updateClock()},400);
 queueSpectrum();bootRecords();
 })();

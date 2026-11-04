@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {
   analyzeChannels, assessExport, boundaryStepRatio, canTransition, createClock,
   csvCell, decodedAudioAllowance, encodeWav, exportAllowance, fillNoise, masterGain, measureFilter,
-  noiseLength, protectionDecision, pushParamEvent, recordsToCsv, replacementGainRatio,
-  snapshotSettings, spectralSlopeDbPerOctave, trackGain, validateBackup, voiceSpec
+  motionAmplitude, nextSeed, noiseLength, protectionDecision, pushParamEvent, randomTracks,
+  recordsToCsv, replacementGainRatio, sanitizeTrack, seedFromId, snapshotSettings,
+  spectralSlopeDbPerOctave, TONE_CONFIG, trackGain, validateBackup, voiceSpec
 } from '../core.js';
 
 const SR = 44100;
@@ -230,4 +231,73 @@ test('CSV 导出包含参数快照、参数变更、舒适度与不适反应', (
   assert.match(csv, /""freq"":4000/);
   assert.match(csv, /头晕/);
   assert.match(csv, /"舒适度"/);
+});
+
+test('换一段声音是确定性的，且不会退回同一段噪声', () => {
+  const a = nextSeed(1234);
+  assert.equal(a, nextSeed(1234));
+  assert.notEqual(a, nextSeed(a));
+  assert.ok(Number.isInteger(a) && a >= 0 && a <= 0xffffffff);
+  assert.equal(seedFromId('tl-a'), seedFromId('tl-a'));
+  assert.notEqual(seedFromId('tl-a'), seedFromId('tl-b'));
+});
+
+test('起伏深度被夹在 0 到 15% 之间，不会越界抬高满档峰值', () => {
+  assert.equal(motionAmplitude(0), 0);
+  assert.equal(motionAmplitude(100), TONE_CONFIG.motionMaxAmplitude);
+  assert.ok(Math.abs(motionAmplitude(50) - TONE_CONFIG.motionMaxAmplitude / 2) < 1e-12);
+  assert.equal(motionAmplitude(999), TONE_CONFIG.motionMaxAmplitude);
+  assert.equal(motionAmplitude(-20), 0);
+});
+
+test('旧备份补出的音色默认值不改变原有听感与电平', () => {
+  const old = sanitizeTrack({ id: 't1', kind: 'rain', level: 40, pan: -20, freq: 4000, bw: 1, cutoff: 8000 });
+  assert.equal(old.motionDepth, 0);
+  assert.equal(old.highpassHz, TONE_CONFIG.highpassMinHz);
+  assert.equal(old.trebleDb, 0);
+  assert.equal(old.seed, seedFromId('t1'));
+  assert.equal(old.level, 40);
+  const spec = voiceSpec(old, 1);
+  assert.equal(spec.motionAmplitude, 0);
+  assert.equal(spec.trebleDb, 0);
+  assert.equal(spec.gain, trackGain(40, 1));
+});
+
+test('实时与离线共用新增的音色参数，越界值在净化层被夹住', () => {
+  const t = sanitizeTrack({ id: 't2', kind: 'pink', level: 30, trebleDb: 99, highpassHz: 9000, motionDepth: 60 });
+  assert.equal(t.trebleDb, TONE_CONFIG.trebleMaxDb);
+  assert.equal(t.highpassHz, TONE_CONFIG.highpassMaxHz);
+  const spec = voiceSpec(t, 2);
+  assert.equal(spec.trebleDb, 12);
+  assert.equal(spec.highpassHz, 2000);
+  assert.ok(Math.abs(spec.motionAmplitude - 0.09) < 1e-12);
+  assert.deepEqual(voiceSpec(t, 2), voiceSpec(t, 2));
+});
+
+test('随机混音不产生高电平或实验性声源，且同一 seed 可复现', () => {
+  const a = randomTracks(42, 4);
+  assert.equal(a.length, 4);
+  assert.deepEqual(a, randomTracks(42, 4));
+  assert.notDeepEqual(a, randomTracks(43, 4));
+  for (const t of a) {
+    assert.ok(['pink', 'brown', 'rain', 'stream', 'white'].includes(t.kind));
+    assert.ok(t.level >= 18 && t.level <= 48);
+    assert.ok(t.cutoff >= 3000 && t.cutoff <= 11000);
+    assert.ok(t.trebleDb >= -4 && t.trebleDb <= 4);
+  }
+  assert.equal(randomTracks(1, 99).length, 6);
+});
+
+test('参数快照包含新增音色字段，v4 旧备份依然能导入', () => {
+  const snap = snapshotSettings({
+    volume: 20, duration: 30, fadeIn: 5, fadeOut: 5, activeName: 'x', activeId: 'custom',
+    tracks: [sanitizeTrack({ id: 't3', kind: 'rain', motionDepth: 45, trebleDb: 3 })]
+  });
+  assert.equal(snap.tracks[0].motionDepth, 45);
+  assert.equal(snap.tracks[0].trebleDb, 3);
+  assert.ok(Number.isInteger(snap.tracks[0].seed));
+  const backup = validateBackup({ version: 4, settings: { tracks: [{ id: 't3', kind: 'rain' }] }, logs: [], sessions: [] });
+  assert.equal(backup.ok, true);
+  assert.equal(backup.data.settings.tracks[0].motionDepth, 0);
+  assert.equal(backup.data.settings.tracks[0].trebleDb, 0);
 });

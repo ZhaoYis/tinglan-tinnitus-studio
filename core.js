@@ -1,5 +1,5 @@
-// 听澜 4.1 可测试核心：噪声、滤波、播放时钟、导出评估与数据校验。
-export const APP_VERSION = '4.1';
+// 听澜 4.2 可测试核心：噪声、滤波、播放时钟、导出评估与数据校验。
+export const APP_VERSION = '4.2';
 
 export const PLAYER_STATES = ['IDLE', 'STARTING', 'PLAYING', 'PAUSING', 'PAUSED', 'STOPPING', 'ERROR'];
 
@@ -41,6 +41,57 @@ export function clamp(x, lo, hi) {
 
 export function octQ(octaves) {
   return 1 / (2 * Math.sinh(Math.LN2 * octaves / 2));
+}
+
+// v4.2 声音自由度：边界集中在这里，避免滑杆范围、净化白名单和单测各写一份。
+// motionMaxAmplitude 0.15 对应约 +1.2 dB；再高会让满档白噪频繁触发峰值保护。
+// motionRateHz 0.055 周期约 18 秒，与 12–25 秒的噪声循环不同步，听感不再重复。
+export const TONE_CONFIG = Object.freeze({
+  motionMaxAmplitude: 0.15,
+  motionRateHz: 0.055,
+  highpassMinHz: 20,
+  highpassMaxHz: 2000,
+  trebleMinDb: -12,
+  trebleMaxDb: 12,
+  trebleShelfHz: 2200
+});
+
+export function seedFromId(id) {
+  let h = 2166136261;
+  const text = String(id ?? '');
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+// 线性同余：确定性、可测、可复现。「换一片雨」不引入不可控的 Math.random。
+export function nextSeed(seed) {
+  const n = Number.isFinite(+seed) ? Math.trunc(+seed) : 1;
+  return (Math.imul(n || 1, 1664525) + 1013904223) >>> 0;
+}
+
+export function motionAmplitude(motionDepth) {
+  return clamp(motionDepth, 0, 100) / 100 * TONE_CONFIG.motionMaxAmplitude;
+}
+
+// 随机一组保守混音：电平 18–48，不生成 band/notch/file，避免一上来就出刺耳或过载的组合。
+export function randomTracks(seed, count = 3) {
+  let state = nextSeed(seed);
+  const rand = () => { state = nextSeed(state); return state / 4294967296; };
+  const kinds = ['pink', 'brown', 'rain', 'stream', 'white'];
+  const total = clamp(Math.round(count), 2, 6);
+  const out = [];
+  for (let i = 0; i < total; i++) {
+    out.push({
+      kind: kinds[Math.floor(rand() * kinds.length)],
+      level: Math.round(18 + rand() * 30),
+      pan: Math.round((rand() * 2 - 1) * 60),
+      cutoff: Math.round((3000 + rand() * 8000) / 250) * 250,
+      highpassHz: TONE_CONFIG.highpassMinHz,
+      trebleDb: Math.round((rand() * 8 - 4) * 2) / 2,
+      motionDepth: Math.round(20 + rand() * 40)
+    });
+  }
+  return out;
 }
 
 export function masterGain(volume) {
@@ -479,7 +530,13 @@ export function voiceSpec(track, audibleCount) {
     Q: filtered ? octQ(track.bw) : null,
     cutoff: track.cutoff,
     pan: track.pan / 100,
-    gain: trackGain(track.level, audibleCount)
+    gain: trackGain(track.level, audibleCount),
+    highpassHz: clamp(track.highpassHz ?? TONE_CONFIG.highpassMinHz, TONE_CONFIG.highpassMinHz, TONE_CONFIG.highpassMaxHz),
+    trebleDb: clamp(track.trebleDb ?? 0, TONE_CONFIG.trebleMinDb, TONE_CONFIG.trebleMaxDb),
+    trebleShelfHz: TONE_CONFIG.trebleShelfHz,
+    motionAmplitude: motionAmplitude(track.motionDepth ?? 0),
+    motionRateHz: TONE_CONFIG.motionRateHz,
+    seed: Number.isFinite(+track.seed) ? Math.trunc(+track.seed) >>> 0 : seedFromId(track.id)
   };
 }
 
@@ -493,7 +550,8 @@ export function snapshotSettings(settings) {
     activeId: settings.activeId,
     tracks: (settings.tracks || []).map(t => ({
       id: t.id, kind: t.kind, level: t.level, pan: t.pan, freq: t.freq, bw: t.bw,
-      cutoff: t.cutoff, mute: !!t.mute, solo: !!t.solo, fileName: t.fileName || ''
+      cutoff: t.cutoff, mute: !!t.mute, solo: !!t.solo, fileName: t.fileName || '',
+      seed: t.seed, motionDepth: t.motionDepth, highpassHz: t.highpassHz, trebleDb: t.trebleDb
     }))
   };
 }
@@ -535,8 +593,9 @@ export function recordsToCsv(sessions, logs) {
 
 export function sanitizeTrack(t) {
   const kind = t && TRACK_KINDS.includes(t.kind) ? t.kind : 'pink';
+  const id = t && typeof t.id === 'string' ? t.id.slice(0, 40) : '';
   return {
-    id: t && typeof t.id === 'string' ? t.id.slice(0, 40) : '',
+    id,
     kind,
     level: clamp(t?.level ?? 30, 0, 100),
     pan: clamp(t?.pan ?? 0, -100, 100),
@@ -545,7 +604,12 @@ export function sanitizeTrack(t) {
     cutoff: clamp(t?.cutoff ?? 8000, 1000, 14000),
     mute: !!t?.mute,
     solo: !!t?.solo,
-    fileName: String(t?.fileName || '').slice(0, 70)
+    fileName: String(t?.fileName || '').slice(0, 70),
+    // 旧备份没有这四项，按「与 v4.1 听感一致」补默认值：不变化、不切低频、不提亮。
+    seed: Number.isFinite(+t?.seed) ? Math.trunc(+t.seed) >>> 0 : seedFromId(id),
+    motionDepth: clamp(t?.motionDepth ?? 0, 0, 100),
+    highpassHz: clamp(t?.highpassHz ?? TONE_CONFIG.highpassMinHz, TONE_CONFIG.highpassMinHz, TONE_CONFIG.highpassMaxHz),
+    trebleDb: clamp(t?.trebleDb ?? 0, TONE_CONFIG.trebleMinDb, TONE_CONFIG.trebleMaxDb)
   };
 }
 
