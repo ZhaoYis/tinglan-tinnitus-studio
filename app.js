@@ -54,33 +54,413 @@ let favorites=Array.isArray(v4?.favorites)?v4.favorites:[];
 let person=v4?.person&&typeof v4.person==='object'?v4.person:{name:'听澜用户',tinnitus:'',sleepPreference:'',note:''};
 let page='home',selectedCategory='全部',search='',trendDays=7,files=new Map(),audioContext=null,engine=null,playerState='IDLE',epoch=0,playbackQueue=Promise.resolve(),session=null,lastSessionId=null,clock=createClock(),elapsed=0,exporting=false,toastTimeout=0;
 let protectionTimer=0,wakeLock=null,spectrumFrame=0,spectrumTimer=0,spectrumDirty=true;
+let recordTab='overview',dialogReturn=null,lastTrigger=null;
 const NOISE_CACHE_BYTES=48*1048576;let noiseCache=new Map(),noiseCacheBytes=0;
 const REASON_TEXT={completed:'定时结束',manual:'手动停止',discomfort:'不适停止',error:'异常停止',interrupted:'播放中断'};
 const fmt=s=>{s=Math.max(0,Math.floor(s));return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
-function notify(msg){const el=$('toast');el.textContent=msg;el.classList.add('visible');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>el.classList.remove('visible'),3300)}
+function notify(msg){const el=$('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>el.classList.remove('show'),3300)}
 function waveSVG(seed=1){let a=[];for(let i=0;i<57;i++){const h=4+16*Math.abs(Math.sin(i*.36+seed)*Math.cos(i*.13+seed*.31))+6*Math.abs(Math.sin(i*.9+seed));a.push(`<rect x="${i*3.5}" y="${20-h/2}" width="2" height="${h.toFixed(1)}" rx="1" fill="currentColor" opacity="${(.45+.4*Math.sin(i*.06)**2).toFixed(2)}"/>`)}return `<svg class="track-waves" viewBox="0 0 201 40" preserveAspectRatio="none" aria-hidden="true">${a.join('')}</svg>`}
 const summary=ts=>ts.map(t=>TYPES[t.kind]).slice(0,3).join(' · ')+(ts.length>3?'…':'');
 const pct=v=>`${Math.round(v)}%`;
-function readSettingsToUI(){for(const k of ['volume','duration','fadeIn','fadeOut']){let el=$(k==='volume'?'masterVolume':k);if(el)el.value=settings[k]}$('masterVal').textContent=settings.volume+'%';$('activeName').textContent=settings.activeName||'自定义混合';$('trackSummary').textContent=summary(settings.tracks)||'尚未添加声源';$('trackCount').textContent=`(${settings.tracks.length}/6)`;$('addTrack').disabled=settings.tracks.length>=6;$('timeTotal').textContent=fmt(settings.duration*60);$('timeElapsed').textContent=fmt(elapsed);$('progressFill').style.width=(100*elapsed/(settings.duration*60)).toFixed(2)+'%';const statusText={IDLE:'待播放',STARTING:'正在启动',PLAYING:'正在播放',PAUSING:'正在暂停',PAUSED:'已暂停',STOPPING:'正在停止',ERROR:'播放异常'};$('heroStatus').textContent=statusText[playerState]||'待播放';const live=playerState==='PLAYING'||playerState==='PAUSING';$('playBtn').textContent=live?'Ⅱ':'▶';$('playBtn').disabled=playerState==='STARTING'||playerState==='STOPPING'||playerState==='PAUSING';$('playBtn').setAttribute('aria-label',live?'暂停播放':playerState==='PAUSED'?'继续播放':'开始播放');$('stopBtn').disabled=playerState==='IDLE'||playerState==='ERROR'||playerState==='STOPPING';const discomfort=$('discomfortBtn');if(discomfort)discomfort.hidden=playerState!=='PLAYING'&&playerState!=='PAUSED'}
-function renderQuick(){const place=$('quickPresets');place.innerHTML=PRESETS.slice(0,4).map(p=>`<button class="quick-preset ${settings.activeId===p.id?'selected':''}" data-preset="${p.id}"><span class="quick-top"><span class="quick-ico">${p.icon}</span><span class="quick-wave">≋≋≋</span></span><strong>${p.name}</strong><small>${p.sub}</small></button>`).join('')}
-function renderTracks(){const container=$('trackList');container.innerHTML=settings.tracks.map((t,i)=>`<section class="track-card ${t.mute?'is-muted':''}" data-track="${safe(t.id)}" style="--track-color:${COLORS[i%COLORS.length]}"><div class="track-mainline"><div class="track-title"><i class="track-dot"></i><span>${safe(TYPES[t.kind])}</span></div><div class="track-action"><button data-track-action="mute" class="${t.mute?'active':''}" title="${t.mute?'取消静音':'静音'}" aria-label="静音">M</button><button data-track-action="solo" class="${t.solo?'active':''}" title="单独试听该轨" aria-label="独奏">S</button><button data-track-action="duplicate" title="复制音轨" aria-label="复制音轨">⧉</button><button data-track-action="remove" class="delete" title="删除音轨" aria-label="删除音轨">×</button></div></div><div class="track-secondline"><div class="track-art ${THUMBS[t.kind]}"></div><div class="track-visual">${waveSVG(i+3)}<small>${t.kind==='file'?(t.fileName||'请先选择本地音频'):t.kind==='band'||t.kind==='notch'?`${Math.round(t.freq)} Hz · ${t.bw.toFixed(1)} oct`:t.kind==='rain'?'柔和的雨声纹理':t.kind==='stream'?'自然流水纹理':'平稳的宽频背景声'}</small></div></div><div class="track-control-row"><div class="volume-control"><div class="control-top"><span>音量</span><strong data-label="level">${Math.round(t.level)}%</strong></div><input type="range" data-prop="level" min="0" max="100" step="1" value="${t.level}" aria-label="音轨音量"></div><div class="volume-control"><div class="control-top"><span>声相 L ↔ R</span><strong data-label="pan">${t.pan===0?'C':t.pan}</strong></div><input type="range" data-prop="pan" min="-100" max="100" step="5" value="${t.pan}" aria-label="声相"></div></div><details class="track-advanced"><summary>精细参数 · 声音类型与滤波</summary><div class="track-extra"><label class="full">声音来源 <select data-prop="kind">${Object.entries(TYPES).map(([v,name])=>`<option value="${v}" ${t.kind===v?'selected':''}>${name}</option>`).join('')}</select></label>${t.kind==='file'?`<label class="full file-picker">选择本地音频（仅本机处理）<input type="file" data-file="1" accept="audio/*,.wav,.mp3,.m4a,.ogg" hidden></label>`:''}<label>中心频率 (Hz) <input type="number" data-prop="freq" min="250" max="8000" step="50" value="${Math.round(t.freq)}" ${!['band','notch'].includes(t.kind)?'disabled':''}></label><label>频带宽度 (oct) <input type="number" data-prop="bw" min="0.2" max="3" step="0.1" value="${t.bw}" ${!['band','notch'].includes(t.kind)?'disabled':''}></label><label class="full">柔化低通频率 (Hz) <input type="number" data-prop="cutoff" min="1000" max="14000" step="250" value="${t.cutoff}"></label></div>${t.kind==='notch'?'<div class="track-hint">陷波模式属于探索性滤波，不是经验证的专属耳鸣治疗。</div>':''}${['band','notch'].includes(t.kind)?'<canvas class="filter-plot" data-filter-plot aria-label="滤波器频率响应"></canvas><p class="track-hint">曲线按双二阶系数计算。竖线是中心频率，不是听力测试结果。</p>':''}</details></section>`).join('');drawFilterPlots();readSettingsToUI();persist()}
-function setPage(next){if(!['home','presets','records','me'].includes(next))return;page=next;for(const id of ['home','presets','records','me'])$('page-'+id).hidden=id!==next;$$('.tab').forEach(el=>{let active=el.dataset.page===next;el.classList.toggle('active',active);active?el.setAttribute('aria-current','page'):el.removeAttribute('aria-current')});if(next==='presets')renderPresets();if(next==='records')renderRecords();if(next==='me')renderMe();if(next==='home'){spectrumDirty=true;queueSpectrum()}window.scrollTo({top:0,behavior:'instant'})}
+const volumeLabel=v=>v<20?'轻':v<45?'适中':v<70?'较响':'很响';
+const THEME_KEY='tinglan.theme';
+let theme='night';
+const palette={accent:'#f2b880',line:'rgba(233,240,237,.16)',teal:'#5cc9bd',text3:'#7d918c'};
+function readPalette(){
+  const css=getComputedStyle(document.documentElement);
+  palette.accent=css.getPropertyValue('--accent').trim()||palette.accent;
+  palette.line=css.getPropertyValue('--line-strong').trim()||palette.line;
+  palette.teal=css.getPropertyValue('--teal').trim()||palette.teal;
+  palette.text3=css.getPropertyValue('--text-3').trim()||palette.text3;
+}
+function applyTheme(next,save=true){
+  theme=next==='day'?'day':'night';
+  document.documentElement.dataset.theme=theme;
+  const meta=$('themeColor');
+  if(meta)meta.setAttribute('content',theme==='night'?'#0a100f':'#f5f1e8');
+  for(const id of ['themeIcon','themeIcon2']){
+    const icon=$(id);
+    if(icon)icon.setAttribute('href',theme==='night'?'#i-sun':'#i-moon');
+  }
+  const label=$('themeLabel'),btn=$('themeBtn');
+  if(label)label.textContent=theme==='night'?'日间模式':'夜间模式';
+  if(btn)btn.setAttribute('aria-label',theme==='night'?'切换到日间模式':'切换到夜间模式');
+  if(save){try{localStorage.setItem(THEME_KEY,theme)}catch{/*隐私模式下无法写入，主题只在本次会话生效*/}}
+  readPalette();
+  if(page==='records')drawTrend();
+  queueSpectrum();
+}
+function readSettingsToUI(){
+  for(const k of ['volume','duration','fadeIn','fadeOut']){
+    const el=$(k==='volume'?'masterVolume':k);
+    if(el)el.value=settings[k];
+  }
+  const volEl=$('masterVolume');
+  if(volEl)volEl.style.setProperty('--fill',settings.volume+'%');
+  $('masterVal').textContent=settings.volume+'%';
+  const volLabel=$('volLevel');
+  if(volLabel)volLabel.textContent=volumeLabel(settings.volume);
+  const metaGain=$('metaGain');
+  if(metaGain)metaGain.textContent='数字增益 '+settings.volume+'%';
+  const metaDur=$('metaDuration');
+  if(metaDur)metaDur.textContent=settings.duration+' 分钟';
+  $('activeName').textContent=settings.activeName||'自定义混合';
+  $('trackSummary').textContent=summary(settings.tracks)||'尚未添加声源';
+  $('trackCount').textContent=`(${settings.tracks.length}/6)`;
+  $('addTrack').disabled=settings.tracks.length>=6;
+  $('timeTotal').textContent=fmt(settings.duration*60);
+  $('timeElapsed').textContent=fmt(elapsed);
+  $('progressFill').style.width=(100*elapsed/(settings.duration*60)).toFixed(2)+'%';
+
+  const statusText={IDLE:'待播放',STARTING:'正在启动',PLAYING:'正在播放',PAUSING:'正在暂停',PAUSED:'已暂停',STOPPING:'正在停止',ERROR:'播放异常'};
+  const live=playerState==='PLAYING'||playerState==='PAUSING';
+  const status=$('heroStatus');
+  if(status){
+    status.textContent=statusText[playerState]||'待播放';
+    status.classList.toggle('is-live',live);
+  }
+  const playBtn=$('playBtn');
+  playBtn.setAttribute('aria-pressed',String(live));
+  playBtn.setAttribute('aria-label',live?'暂停播放':playerState==='PAUSED'?'继续播放':'开始播放');
+  playBtn.disabled=playerState==='STARTING'||playerState==='STOPPING'||playerState==='PAUSING';
+  const icon=$('playIcon');
+  if(icon)icon.setAttribute('href',live?'#i-pause':'#i-play');
+  const orbLabel=$('orbLabel');
+  if(orbLabel){
+    orbLabel.textContent=live?'正在播放 · 轻触暂停':playerState==='PAUSED'?'已暂停 · 继续播放':'开始播放';
+  }
+  const root=$('tonightRoot');
+  if(root)root.classList.toggle('playing',live);
+  const stopBtn=$('stopBtn');
+  stopBtn.disabled=playerState==='IDLE'||playerState==='ERROR'||playerState==='STOPPING';
+  stopBtn.hidden=playerState==='IDLE'||playerState==='ERROR';
+  const discomfort=$('discomfortBtn');
+  if(discomfort)discomfort.hidden=playerState!=='PLAYING'&&playerState!=='PAUSED';
+}
+function renderQuick(){
+  const place=$('quickPresets');
+  if(!place)return;
+  const items=PRESETS.map(p=>`<button class="chip" type="button" data-preset="${p.id}" aria-pressed="${settings.activeId===p.id}">${safe(p.name)}</button>`);
+  const customs=Object.keys(profiles).slice(0,6).map(name=>{
+    const on=settings.activeId==='custom'&&settings.activeName===name;
+    return `<button class="chip" type="button" data-custom-load="${safe(name,35)}" aria-pressed="${on}">${safe(name,14)}</button>`;
+  });
+  place.innerHTML=[...items,...customs].join('');
+}
+function renderTracks(){
+  const container=$('trackList');
+  container.innerHTML=settings.tracks.map((t,i)=>{
+    const kind=TYPES[t.kind]||'声音';
+    const detail=t.kind==='file'?(t.fileName||'请先选择本地音频')
+      :t.kind==='band'||t.kind==='notch'?`${Math.round(t.freq)} Hz · ${t.bw.toFixed(1)} oct`
+      :t.kind==='rain'?'柔和的雨声纹理'
+      :t.kind==='stream'?'自然流水纹理'
+      :'平稳的宽频背景声';
+    const panFill=Math.round((t.pan+100)/2);
+    return `<section class="track-card ${t.mute?'is-muted':''}" data-track="${safe(t.id)}"
+      style="--track-color:${COLORS[i%COLORS.length]}">
+      <div class="track-mainline">
+        <div class="track-title"><i class="track-dot"></i><span>${safe(kind)}</span></div>
+        <div class="track-action">
+          <button type="button" data-track-action="mute" class="${t.mute?'active':''}"
+            aria-pressed="${!!t.mute}" title="${t.mute?'取消静音':'静音'}" aria-label="静音">
+            <svg><use href="#i-mute"/></svg></button>
+          <button type="button" data-track-action="solo" class="${t.solo?'active':''}"
+            aria-pressed="${!!t.solo}" title="单独试听该轨" aria-label="独奏">
+            <svg><use href="#i-solo"/></svg></button>
+          <button type="button" data-track-action="duplicate" title="复制音轨" aria-label="复制音轨">
+            <svg><use href="#i-copy"/></svg></button>
+          <button type="button" data-track-action="remove" class="delete" title="删除音轨" aria-label="删除音轨">
+            <svg><use href="#i-trash"/></svg></button>
+        </div>
+      </div>
+      <div class="track-secondline">
+        <div class="track-art ${THUMBS[t.kind]}" aria-hidden="true"></div>
+        <div class="track-visual">${waveSVG(i+3)}<small>${safe(detail,40)}</small></div>
+      </div>
+      <div class="track-control-row">
+        <div class="volume-control">
+          <div class="control-top"><span>音量</span><strong data-label="level">${Math.round(t.level)}%</strong></div>
+          <input type="range" data-prop="level" min="0" max="100" step="1" value="${t.level}"
+            style="--fill:${Math.round(t.level)}%" aria-label="音轨音量">
+        </div>
+        <div class="volume-control">
+          <div class="control-top"><span>声相 L ↔ R</span><strong data-label="pan">${t.pan===0?'C':t.pan}</strong></div>
+          <input type="range" data-prop="pan" min="-100" max="100" step="5" value="${t.pan}"
+            style="--fill:${panFill}%" aria-label="声相">
+        </div>
+      </div>
+      <details class="track-advanced">
+        <summary>精细参数 · 声音类型与滤波</summary>
+        <div class="track-extra">
+          <label class="full">声音来源
+            <select data-prop="kind">${Object.entries(TYPES).map(([v,name])=>
+              `<option value="${v}" ${t.kind===v?'selected':''}>${name}</option>`).join('')}</select>
+          </label>
+          ${t.kind==='file'?`<label class="full file-picker">选择本地音频（仅本机处理）
+            <input type="file" data-file="1" accept="audio/*,.wav,.mp3,.m4a,.ogg" hidden></label>`:''}
+          <label>中心频率 (Hz)
+            <input type="number" data-prop="freq" min="250" max="8000" step="50"
+              value="${Math.round(t.freq)}" ${!['band','notch'].includes(t.kind)?'disabled':''}>
+          </label>
+          <label>频带宽度 (oct)
+            <input type="number" data-prop="bw" min="0.2" max="3" step="0.1"
+              value="${t.bw}" ${!['band','notch'].includes(t.kind)?'disabled':''}>
+          </label>
+          <label class="full">柔化低通频率 (Hz)
+            <input type="number" data-prop="cutoff" min="1000" max="14000" step="250" value="${t.cutoff}">
+          </label>
+        </div>
+        ${t.kind==='notch'?'<div class="track-hint">陷波模式属于探索性滤波，不是经验证的专属耳鸣治疗。</div>':''}
+        ${['band','notch'].includes(t.kind)?`<canvas class="filter-plot" data-filter-plot aria-label="滤波器频率响应"></canvas>
+          <p class="track-hint">曲线按双二阶系数计算。竖线是中心频率，不是听力测试结果。</p>`:''}
+      </details>
+    </section>`;
+  }).join('');
+  drawFilterPlots();
+  readSettingsToUI();
+  persist();
+}
+function setPage(next){
+  const pages=['home','presets','records','me','mixer'];
+  if(!pages.includes(next))return;
+  page=next;
+  for(const id of pages){const el=$('page-'+id);if(el)el.hidden=id!==next;}
+  $$('.tab').forEach(el=>{
+    const active=el.dataset.page===next;
+    el.classList.toggle('active',active);
+    if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');
+  });
+  if(next==='presets')renderPresets();
+  if(next==='records')renderRecords();
+  if(next==='me')renderMe();
+  if(next==='home'){spectrumDirty=true;queueSpectrum()}
+  window.scrollTo({top:0,behavior:'instant'});
+}
 function applyPreset(id){let p=PRESETS.find(x=>x.id===id);if(!p)return;stop(true);settings.tracks=tracksFor(p);settings.activeId=p.id;settings.activeName=p.name;files.clear();elapsed=0;renderQuick();renderTracks();setPage('home');notify('已加载「'+p.name+'」，请从低音量试听')}
-function renderPresets(){const chips=$('categoryChips');chips.innerHTML=CATEGORIES.map(c=>`<button data-category="${c}" class="${c===selectedCategory?'selected':''}">${c}</button>`).join('');const chosen=PRESETS.filter(p=>(selectedCategory==='全部'||p.category.includes(selectedCategory))&&`${p.name} ${p.desc} ${p.sub}`.includes(search));$('presetGrid').innerHTML=chosen.length?chosen.map((p,i)=>`<article class="preset-card"><button class="favorite-btn" data-favorite="${p.id}" title="收藏预设" aria-label="收藏预设">${favorites.includes(p.id)?'♥':'♡'}</button><button style="padding:0;border:0;background:none;width:100%;text-align:left;cursor:pointer" data-preset="${p.id}"><div class="art ${p.art}"></div><h3>${p.name}</h3><p>${p.sub}</p><div class="mini-wave-preview">${Array.from({length:44},(_,j)=>`<span style="height:${4+Math.round(13*Math.abs(Math.sin(j*.41+i)*Math.cos(j*.17)))}px"></span>`).join('')}</div><div class="tags">${p.category.map(c=>`<span class="tag">${c}</span>`).join('')}</div></button></article>`).join(''):'<div class="empty">未找到匹配的预设</div>';
- const names=Object.keys(profiles).sort((a,b)=>(profiles[b].createdAt||'').localeCompare(profiles[a].createdAt||''));$('customCount').textContent=names.length+' 个';$('customPresets').innerHTML=names.length?names.map(name=>`<div class="custom-preset"><div class="custom-bubble">≋</div><div class="custom-text"><strong>${safe(name,40)}</strong><span>${safe(summary(profiles[name]?.settings?.tracks||[]),55)}</span></div><button class="tiny-outline" data-custom-load="${safe(name,60)}">使用</button><button class="tiny-outline" data-custom-delete="${safe(name,60)}">删除</button></div>`).join(''):'<div class="empty">还没有自定义方案。在首页调好混音后，点击“保存当前组合”。</div>'}
+function renderPresets(){
+  const icons={moon:'#i-moon',forest:'#i-wave',leaf:'#i-freq',rain:'#i-rain',band:'#i-freq',stream:'#i-layers'};
+  const chips=$('categoryChips');
+  if(chips){
+    chips.innerHTML=CATEGORIES.map(c=>`<button class="chip" type="button" data-category="${c}" aria-pressed="${c===selectedCategory}">${c}</button>`).join('');
+  }
+  const chosen=PRESETS.filter(p=>(selectedCategory==='全部'||p.category.includes(selectedCategory))&&`${p.name} ${p.desc} ${p.sub}`.includes(search));
+  const count=$('presetCount');
+  if(count)count.textContent=`${chosen.length} 个预设`;
+  $('presetGrid').innerHTML=chosen.length?chosen.map(p=>{
+    const fav=favorites.includes(p.id);
+    return `<article class="preset-card">
+      <button class="favorite-btn" type="button" data-favorite="${p.id}" aria-label="收藏预设" aria-pressed="${fav}">${fav?'♥':'♡'}</button>
+      <button class="preset" type="button" data-preset="${p.id}">
+        <span class="p-icon"><svg><use href="${icons[p.art]||'#i-wave'}"/></svg></span>
+        <strong>${safe(p.name)}</strong>
+        <span class="p-desc">${safe(p.desc,30)}</span>
+        <span class="p-tag">${safe(p.category[0])}</span>
+      </button>
+    </article>`;
+  }).join(''):'<div class="empty">未找到匹配的预设</div>';
+  const names=Object.keys(profiles).sort((a,b)=>(profiles[b].createdAt||'').localeCompare(profiles[a].createdAt||''));
+  $('customCount').textContent=names.length+' 个';
+  $('customPresets').innerHTML=names.length?names.map(name=>`<div class="custom-row">
+    <button class="custom-main" type="button" data-custom-load="${safe(name,60)}">
+      <span class="l-icon"><svg><use href="#i-layers"/></svg></span>
+      <span class="l-main"><strong>${safe(name,40)}</strong>
+      <span>${safe(summary(profiles[name]?.settings?.tracks||[]),55)}</span></span>
+    </button>
+    <button class="icon-btn tiny" type="button" data-custom-delete="${safe(name,60)}" aria-label="删除方案 ${safe(name,40)}">
+      <svg><use href="#i-trash"/></svg>
+    </button>
+  </div>`).join(''):'<div class="empty">还没有个人方案。调好混音后点「保存当前组合」。</div>';
+}
 function loadCustom(name){const p=profiles[name];if(!p)return;stop(true);files.clear();settings={...settings,...p.settings,tracks:(p.settings?.tracks||[]).map(validTrack),activeName:name,activeId:'custom'};elapsed=0;renderTracks();renderQuick();setPage('home');notify('已加载个人方案：'+name)}
 function saveProfile(){openDialog('保存混音方案',`<div class="dialog-body"><label>方案名称<input id="profileInput" maxlength="35" placeholder="例如：我的睡前雨声" value="${safe(settings.activeId==='custom'?settings.activeName:'')}"></label><p class="dialog-info">会保存所有音轨的声音类型、频率、位置和增益等设置。自选音频文件只保留名称，重新打开时需重新选择文件。</p></div>`,[{text:'取消',fn:closeDialog},{text:'保存方案',primary:true,fn:()=>{let name=$('profileInput').value.trim().slice(0,35);if(!name)return notify('请填写名称');if(Object.keys(profiles).length>=30&&!profiles[name])return notify('最多保存30个方案');profiles[name]={name,createdAt:new Date().toISOString(),settings:{...settings,tracks:settings.tracks.map(x=>({...x}))}};settings.activeName=name;settings.activeId='custom';persist();renderQuick();readSettingsToUI();closeDialog();notify('已保存：'+name)}}])}
 function dayKey(v){const d=new Date(v);if(Number.isNaN(+d))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 function friendlyDate(v){const d=new Date(v);return Number.isNaN(+d)?'未知日期':`${d.getMonth()+1}月${d.getDate()}日`}
 function weeklyData(){const d=new Date();d.setHours(0,0,0,0);const day=d.getDay()||7;d.setDate(d.getDate()-day+1);const weekStart=d.getTime(),end=weekStart+7*86400000;const wSess=sessions.filter(x=>{let t=Date.parse(x.date);return t>=weekStart&&t<end});const wLogs=logs.filter(x=>{let t=Date.parse(x.date);return t>=weekStart&&t<end});const days=new Set([...wSess,...wLogs].map(x=>dayKey(x.date)).filter(Boolean));let sleep=wLogs.map(x=>Number(x.sleep)).filter(x=>Number.isFinite(x)&&x>=0&&x<=600);return {weekStart,mins:Math.round(wSess.reduce((sum,x)=>sum+(Number(x.seconds)||0),0)/60),days:days.size,sleep:sleep.length?Math.round(sleep.reduce((a,b)=>a+b,0)/sleep.length):null}}
-function renderRecords(){const wk=weeklyData(),d=new Date(wk.weekStart),end=new Date(wk.weekStart+6*86400000);$('weekRange').textContent=`${d.getMonth()+1}/${d.getDate()} — ${end.getMonth()+1}/${end.getDate()}`;$('weeklyDuration').innerHTML=`${wk.mins}<small>分钟</small>`;$('weeklyDays').innerHTML=`${wk.days}<small>天</small>`;$('averageSleep').innerHTML=`${wk.sleep??'—'}<small>${wk.sleep===null?'':'分钟'}</small>`;$$('#trendSegments button').forEach(b=>b.classList.toggle('selected',Number(b.dataset.days)===trendDays));drawTrend();const sleeper=[...logs].filter(x=>x.sleep!==null&&x.sleep!==undefined&&x.sleep!=='').reverse().slice(0,4);$('sleepRows').innerHTML=sleeper.length?sleeper.map(x=>`<div class="data-row"><div class="row-icon">☾</div><div class="row-content"><strong>${friendlyDate(x.date)} · 入睡约 ${safe(x.sleep)} 分钟</strong><span>${safe(x.notes||'已记录入睡时间',55)}</span></div><span class="row-tag">睡眠自评</span></div>`).join(''):'<div class="empty">暂无睡眠数据，可以点击右上角添加</div>';
- $('sessionsCount').textContent=`共 ${sessions.length} 次`;$('sessionRows').innerHTML=sessions.length?[...sessions].reverse().slice(0,7).map(x=>{const confirmed=Number(x.confirmedSeconds??x.seconds)||0;const detail=`播放器 ${Math.round(x.playerSeconds??confirmed)} 秒 · 音频上下文 ${Math.round(x.audioSeconds??confirmed)} 秒 · 确认 ${Math.round(confirmed)} 秒`;return `<div class="data-row"><div class="row-icon">♫</div><div class="row-content"><strong>${safe(x.name||'自定义混合',38)}</strong><span>${friendlyDate(x.date)} · ${safe(x.tracks||'',40)} · ${REASON_TEXT[x.endReason]||'已记录'}</span></div><span class="row-tag" title="${safe(detail,120)}">${confirmed<60?`${Math.round(confirmed)} 秒`:`${(confirmed/60).toFixed(1)} 分钟`}</span></div>`}).join(''):'<div class="empty">还没有播放日志。结束播放后会记录确认出声时长</div>';
- $('journalRows').innerHTML=logs.length?[...logs].reverse().slice(0,6).map(x=>{const comfort=x.comfort===null||x.comfort===undefined?'':`舒适度 ${x.comfort}/10`;const adverse=Array.isArray(x.adverseEffects)&&x.adverseEffects.length?`不适：${x.adverseEffects.join('、')}`:'';const extras=[comfort,adverse].filter(Boolean).join(' · ');return `<div class="data-row"><div class="row-icon">✎</div><div class="row-content"><strong>${friendlyDate(x.date)} · 困扰 ${safe(x.before??'?')} → ${safe(x.after??'?')}</strong><span>${safe([x.notes||'自评记录',extras,x.sessionId?'已关联播放':'日常自评'].filter(Boolean).join(' · '),90)}</span></div><button class="tiny-outline" data-delete-log="${safe(x.id||'')}">删除</button></div>`}).join(''):'<div class="empty">还没有自评记录 · 可以先从今晚开始</div>'}
-function drawTrend(){const cvs=$('trendCanvas');if(!cvs)return;const rect=cvs.getBoundingClientRect(),dpr=Math.min(2,devicePixelRatio||1),w=Math.max(50,Math.floor(rect.width*dpr)),h=Math.max(50,Math.floor(rect.height*dpr));cvs.width=w;cvs.height=h;const ctx=cvs.getContext('2d');ctx.clearRect(0,0,w,h);const left=33*dpr,right=w-12*dpr,top=20*dpr,bottom=h-27*dpr;ctx.strokeStyle='#e7e8dd';ctx.fillStyle='#829691';ctx.lineWidth=dpr;ctx.font=`${10*dpr}px system-ui`;for(let i=0;i<=5;i++){let y=top+(bottom-top)*i/5;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillText(String(10-i*2),8*dpr,y+3*dpr)}const dates=[];for(let i=trendDays-1;i>=0;i--){const day=new Date();day.setHours(12,0,0,0);day.setDate(day.getDate()-i);dates.push(dayKey(day))}const byDay=new Map();for(let x of logs){const key=dayKey(x.date),v=Number(x.after);if(dates.includes(key)&&Number.isFinite(v)&&v>=0&&v<=10){const vals=byDay.get(key)||[];vals.push(v);byDay.set(key,vals)}}const points=dates.map((k,i)=>{const vals=byDay.get(k);return vals?{x:left+(right-left)*(i/(dates.length-1||1)),y:bottom-(vals.reduce((a,b)=>a+b,0)/vals.length/10)*(bottom-top)}:null}).filter(Boolean);$('chartEmpty').hidden=points.length!==0;if(points.length){ctx.strokeStyle='#29908a';ctx.fillStyle='#57aaa1';ctx.lineWidth=2.2*dpr;ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.stroke();for(const p of points){ctx.beginPath();ctx.arc(p.x,p.y,4*dpr,0,Math.PI*2);ctx.fill()}}const step=Math.max(1,Math.ceil(dates.length/6));for(let i=0;i<dates.length;i+=step){const pos=left+(right-left)*(i/(dates.length-1||1));ctx.fillStyle='#99a5a1';ctx.fillText(dates[i].slice(5).replace('-','/'),pos-13*dpr,h-9*dpr)}}
+function renderRecords(){
+  const wk=weeklyData(),d=new Date(wk.weekStart),end=new Date(wk.weekStart+6*86400000);
+  $('weekRange').textContent=`${d.getMonth()+1}/${d.getDate()} — ${end.getMonth()+1}/${end.getDate()}`;
+  $('weeklyDuration').innerHTML=`${wk.mins}<small>分钟</small>`;
+  $('weeklyDays').innerHTML=`${wk.days}<small>天</small>`;
+  $('averageSleep').innerHTML=`${wk.sleep??'—'}<small>${wk.sleep===null?'':'分钟'}</small>`;
+
+  $$('#trendSegments button').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.seg===recordTab)));
+  $$('[data-panel]').forEach(p=>{p.hidden=p.dataset.panel!==recordTab;});
+  $$('#rangeSegments button').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.days)===trendDays)));
+
+  const playedDays=new Set(sessions.map(x=>dayKey(x.date)).filter(Boolean)).size;
+  const longest=Math.max(0,...sessions.map(x=>Number(x.confirmedSeconds??x.seconds)||0));
+  const stops=sessions.filter(x=>x.endReason==='discomfort').length;
+  $('playedDays').innerHTML=`${playedDays}<small>天</small>`;
+  $('longestSession').innerHTML=`${Math.round(longest/60)}<small>分钟</small>`;
+  $('discomfortCount').innerHTML=`${stops}<small>次</small>`;
+  const recent=logs.filter(x=>{
+    const t=Date.parse(x.date);
+    return Number.isFinite(t)&&Date.now()-t<=trendDays*86400000;
+  });
+  const avg=recent.length?(recent.reduce((s,x)=>s+(Number(x.after)||0),0)/recent.length).toFixed(1):'—';
+  $('trendAvg').textContent=recent.length?`平均 ${avg} · ${trendDays} 天`:`${trendDays} 天 · 暂无数据`;
+  drawTrend();
+
+  const sleeper=[...logs].filter(x=>x.sleep!==null&&x.sleep!==undefined&&x.sleep!=='').reverse().slice(0,6);
+  $('sleepRows').innerHTML=sleeper.length?sleeper.map(x=>`<div class="log-row">
+    <div class="l-icon"><svg><use href="#i-moon"/></svg></div>
+    <div class="l-main"><strong>${friendlyDate(x.date)} · 入睡约 ${safe(x.sleep)} 分钟</strong>
+    <span>${safe(x.notes||'已记录入睡时间',55)}</span></div>
+    <span class="l-val">睡眠自评</span>
+  </div>`).join(''):'<div class="empty">暂无睡眠数据，可以点「添加」记录</div>';
+
+  $('sessionsCount').textContent=`共 ${sessions.length} 次`;
+  $('sessionRows').innerHTML=sessions.length?[...sessions].reverse().slice(0,10).map(x=>{
+    const confirmed=Number(x.confirmedSeconds??x.seconds)||0;
+    const detail=`播放器 ${Math.round(x.playerSeconds??confirmed)} 秒 · 音频上下文 ${Math.round(x.audioSeconds??confirmed)} 秒 · 确认 ${Math.round(confirmed)} 秒`;
+    return `<div class="log-row">
+      <div class="l-icon"><svg><use href="#i-wave"/></svg></div>
+      <div class="l-main"><strong>${safe(x.name||'自定义混合',38)}</strong>
+      <span>${friendlyDate(x.date)} · ${safe(x.tracks||'',40)} · ${REASON_TEXT[x.endReason]||'已记录'}</span></div>
+      <span class="l-val" title="${safe(detail,120)}">${confirmed<60?`${Math.round(confirmed)} 秒`:`${(confirmed/60).toFixed(1)} 分钟`}</span>
+    </div>`;
+  }).join(''):'<div class="empty">还没有播放日志。结束播放后会记录确认出声时长</div>';
+
+  $('journalRows').innerHTML=logs.length?[...logs].reverse().slice(0,8).map(x=>{
+    const comfort=x.comfort===null||x.comfort===undefined?'':`舒适度 ${x.comfort}/10`;
+    const adverse=Array.isArray(x.adverseEffects)&&x.adverseEffects.length?`不适：${x.adverseEffects.join('、')}`:'';
+    const extras=[comfort,adverse].filter(Boolean).join(' · ');
+    return `<div class="log-row">
+      <div class="l-icon"><svg><use href="#i-pencil"/></svg></div>
+      <div class="l-main"><strong>${friendlyDate(x.date)} · 困扰 ${safe(x.before??'?')} → ${safe(x.after??'?')}</strong>
+      <span>${safe([x.notes||'自评记录',extras,x.sessionId?'已关联播放':'日常自评'].filter(Boolean).join(' · '),90)}</span></div>
+      <button class="icon-btn tiny" type="button" data-delete-log="${safe(x.id||'')}" aria-label="删除这条自评">
+        <svg><use href="#i-trash"/></svg>
+      </button>
+    </div>`;
+  }).join(''):'<div class="empty">还没有自评记录 · 可以先从今晚开始</div>';
+}
+function ratingSeries(days){
+  const dates=[];
+  for(let i=days-1;i>=0;i--){
+    const day=new Date();
+    day.setHours(12,0,0,0);
+    day.setDate(day.getDate()-i);
+    dates.push(dayKey(day));
+  }
+  const byDay=new Map();
+  for(const x of logs){
+    const v=Number(x.after);
+    if(!Number.isFinite(v)||v<0||v>10)continue;
+    const idx=dates.indexOf(dayKey(x.date));
+    if(idx<0)continue;
+    const cur=byDay.get(idx)||[];
+    cur.push(v);
+    byDay.set(idx,cur);
+  }
+  return [...byDay.entries()]
+    .sort((a,b)=>a[0]-b[0])
+    .map(([idx,vals])=>{
+      const mean=vals.reduce((a,b)=>a+b,0)/vals.length;
+      return {x:idx/Math.max(1,days-1),v:mean};
+    });
+}
+
+function drawChart(cvs,points,withFill){
+  if(!cvs)return;
+  const rect=cvs.getBoundingClientRect();
+  const dpr=Math.min(2,devicePixelRatio||1);
+  const w=Math.max(50,Math.floor(rect.width*dpr)),h=Math.max(50,Math.floor(rect.height*dpr));
+  if(cvs.width!==w||cvs.height!==h){cvs.width=w;cvs.height=h}
+  const ctx=cvs.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  const pad=14*dpr;
+  const x=v=>pad+(w-pad*2)*v.x;
+  const y=v=>h-pad-(h-pad*2)*(v.v/10);
+  if(!points.length)return;
+
+  ctx.strokeStyle=palette.line;
+  ctx.lineWidth=Math.max(1,dpr*.8);
+  ctx.beginPath();
+  ctx.moveTo(pad,y({v:5}));
+  ctx.lineTo(w-pad,y({v:5}));
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x(points[0]),y(points[0]));
+  for(let i=1;i<points.length;i++){
+    const ax=x(points[i-1]),ay=y(points[i-1]);
+    const bx=x(points[i]),by=y(points[i]);
+    const cx=(ax+bx)/2;
+    ctx.bezierCurveTo(cx,ay,cx,by,bx,by);
+  }
+  ctx.strokeStyle=palette.accent;
+  ctx.lineWidth=2*dpr;
+  ctx.lineJoin='round';
+  ctx.lineCap='round';
+  ctx.stroke();
+
+  if(withFill){
+    ctx.lineTo(x(points[points.length-1]),h-pad);
+    ctx.lineTo(x(points[0]),h-pad);
+    ctx.closePath();
+    const grad=ctx.createLinearGradient(0,pad,0,h);
+    grad.addColorStop(0,palette.accent+'33');
+    grad.addColorStop(1,palette.accent+'00');
+    ctx.fillStyle=grad;
+    ctx.fill();
+  }
+
+  const last=points[points.length-1];
+  ctx.beginPath();
+  ctx.arc(x(last),y(last),4*dpr,0,Math.PI*2);
+  ctx.fillStyle=palette.accent;
+  ctx.fill();
+}
+
+function drawTrend(){
+  drawChart($('trendCanvas'),ratingSeries(7),true);
+  drawChart($('trendCanvas2'),ratingSeries(trendDays),false);
+  const empty=$('chartEmpty');
+  if(empty)empty.hidden=ratingSeries(7).length>0;
+}
 function renderMe(){const mins=Math.round(sessions.reduce((s,x)=>s+(+x.seconds||0),0)/60);$('profileName').textContent=person.name||'听澜用户';$('myPresetCount').innerHTML=`${Object.keys(profiles).length} <small>个</small>`;$('myHours').innerHTML=`${mins} <small>分钟</small>`;$('myLogCount').innerHTML=`${logs.length} <small>条</small>`}
-function renderStats(){const today=dayKey(new Date());let mins=Math.round(sessions.filter(x=>dayKey(x.date)===today).reduce((s,x)=>s+(+x.seconds||0),0)/60);$('todayMinutes').innerHTML=`${mins} <small>分钟</small>`;$('homeLogCount').innerHTML=`${logs.length} <small>条</small>`}
-function openDialog(title,body,buttons=[]){$('dialogTitle').textContent=title;$('dialogBody').className='dialog-body';$('dialogBody').innerHTML=body;$('dialogFooter').replaceChildren();for(const b of buttons){const el=document.createElement('button');el.textContent=b.text;el.className=b.primary?'primary':'subtle-btn';el.addEventListener('click',b.fn);$('dialogFooter').append(el)}$('overlay').hidden=false;document.body.style.overflow='hidden'}
-function closeDialog(){$('overlay').hidden=true;document.body.style.overflow=''}
+function renderStats(){
+  const today=dayKey(new Date());
+  const mins=Math.round(sessions.filter(x=>dayKey(x.date)===today).reduce((s,x)=>s+(+x.seconds||0),0)/60);
+  const a=$('todayMinutes'),b=$('homeLogCount');
+  if(a)a.innerHTML=`${mins} <small>分钟</small>`;
+  if(b)b.innerHTML=`${logs.length} <small>条</small>`;
+}
+function openDialog(title,body,buttons=[]){
+  // 记录触发元素用于关闭后归还焦点；键盘/触摸都可靠，不依赖 activeElement
+  dialogReturn=(lastTrigger&&document.contains(lastTrigger))?lastTrigger:document.activeElement;
+  $('dialogTitle').textContent=title;
+  $('dialogBody').className='dialog-body';
+  $('dialogBody').innerHTML=body;
+  $('dialogFooter').replaceChildren();
+  for(const b of buttons){
+    const el=document.createElement('button');
+    el.type='button';
+    el.textContent=b.text;
+    el.className=b.primary?'btn btn-accent':'btn';
+    el.addEventListener('click',b.fn);
+    $('dialogFooter').append(el);
+  }
+  $('overlay').hidden=false;
+  document.body.style.overflow='hidden';
+  const dialog=$('overlay').querySelector('.dialog');
+  if(dialog)dialog.scrollTop=0;
+  const primary=$('dialogFooter').lastElementChild;
+  // 表单类弹窗聚焦容器，避免打开即跳到页脚、也不弹起键盘；确认类聚焦主按钮
+  const hasField=!!$('dialogBody').querySelector('input:not([type="hidden"]),select,textarea');
+  const target=hasField?dialog:(primary||$('dialogClose'));
+  requestAnimationFrame(()=>{try{target.focus({preventScroll:true})}catch{/*元素已被移除，忽略*/}});
+}
+function closeDialog(){
+  $('overlay').hidden=true;
+  document.body.style.overflow='';
+  if(dialogReturn&&document.contains(dialogReturn)){
+    try{dialogReturn.focus()}catch{/*触发元素可能已随重绘移除，忽略*/}
+  }
+  dialogReturn=null;
+}
 function recentSession(){const last=sessions[sessions.length-1];if(!last)return null;const t=Date.parse(last.endedAt||last.date);if(!Number.isFinite(t)||Date.now()-t>12*3600*1000)return null;return last}
 function openJournal(){const recent=recentSession();const link=recent?`<label class="link-session"><input id="journalLink" type="checkbox" checked> 关联最近一次播放（${safe(recent.name||'自定义混合',24)}）</label>`:'';openDialog('记录今天的感受',`<div class="dialog-body"><p class="dialog-info">评分只用于观察你的困扰变化。可以关联一次播放，也可以单独保存日常自评。睡眠时间请第二天回忆填写。</p><label>记录日期<input id="journalDate" type="date" value="${dayKey(new Date())}"></label><label>播放前困扰程度（0–10）<input id="journalBefore" type="number" min="0" max="10" step="1" placeholder="请填写 0–10"></label><label>播放后困扰程度（0–10）<input id="journalAfter" type="number" min="0" max="10" step="1" placeholder="请填写 0–10"></label><label>舒适度（0–10，可不填）<input id="journalComfort" type="number" min="0" max="10" step="1" placeholder="可不填"></label><div class="adverse-list"><span>不适情况</span><label><input type="checkbox" name="adverse" value="耳鸣加重">耳鸣加重</label><label><input type="checkbox" name="adverse" value="耳痛">耳痛</label><label><input type="checkbox" name="adverse" value="头晕">头晕</label><label><input type="checkbox" name="adverse" value="无">无</label></div>${link}<label>入睡耗时（分钟，可不填）<input id="journalSleep" type="number" min="0" max="600" placeholder="例如 45"></label><label>备注（可不填）<textarea id="journalNotes" maxlength="240" placeholder="今天的声音是否舒适？耳鸣有没有短暂减轻？"></textarea></label></div>`,[{text:'取消',fn:closeDialog},{text:'保存记录',primary:true,fn:()=>{const before=Number($('journalBefore').value),after=Number($('journalAfter').value),raw=$('journalSleep').value.trim(),sl=raw===''?null:Number(raw);const comfortRaw=$('journalComfort').value.trim(),comfort=comfortRaw===''?null:Number(comfortRaw);const day=$('journalDate').value;if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isInteger(before)||before<0||before>10||!Number.isInteger(after)||after<0||after>10||sl!==null&&(!Number.isFinite(sl)||sl<0||sl>600)||comfort!==null&&(!Number.isInteger(comfort)||comfort<0||comfort>10)){notify('请检查日期、评分和入睡时间');return}const adverseEffects=[...document.querySelectorAll('input[name="adverse"]:checked')].map(el=>el.value).filter(v=>v!=='无');const linkBox=$('journalLink');const linked=linkBox&&linkBox.checked?recentSession():null;const entry={id:uid(),date:new Date(day+'T12:00:00').toISOString(),before,after,sleep:sl,comfort,adverseEffects,notes:$('journalNotes').value.trim().slice(0,240),mix:settings.activeName,sessionId:linked?linked.id:null};logs.push(entry);saveRecord('logs',entry);persist();closeDialog();renderStats();if(page==='records')renderRecords();notify('记录已保存在本机')}}])}
 function commitSession(reason){if(!session||session.committed)return;const now=performance.now();const ctxTime=audioContext?audioContext.currentTime:0;const running=!!(audioContext&&audioContext.state==='running'&&(playerState==='PLAYING'||playerState==='PAUSING'));clock.noteAudio(ctxTime,running);session.playerSeconds=clock.playerSeconds(now);session.audioSeconds=clock.audioSeconds(ctxTime,running);session.confirmedSeconds=clock.confirmedSeconds(now,ctxTime,running);clock.pausePlayer(now);clock.noteAudio(ctxTime,false);session.committed=true;const confirmed=session.confirmedSeconds||0;if(confirmed>=2){const record=sanitizeSession({id:session.id,date:session.startedAt,endedAt:new Date().toISOString(),seconds:confirmed,playerSeconds:session.playerSeconds,audioSeconds:session.audioSeconds,confirmedSeconds:confirmed,name:session.initialSettings?.activeName||settings.activeName,tracks:summary(session.initialSettings?.tracks||settings.tracks),presetId:session.presetId||'',initialSettings:session.initialSettings,parameterEvents:session.parameterEvents,endReason:reason});if(record){if(!record.id)record.id=session.id;sessions.push(record);lastSessionId=record.id;saveRecord('sessions',record);persist();renderStats();if(page==='records')renderRecords()}}session=null}
@@ -113,10 +493,56 @@ function readPeak(analyser){if(!engine||!analyser)return {peak:0,nonFinite:0};co
 function monitorOutput(){const meter=$('outputMeter');if(!meter)return;if(!engine||(playerState!=='PLAYING'&&playerState!=='PAUSING')){meter.textContent='滑杆是数字增益，不是声压级。未校准的耳机无法保证实际响度。';meter.classList.remove('meter-alert');return}const left=readPeak(engine.peakL),right=readPeak(engine.peakR),input=readPeak(engine.inputAnalyser);const peak=Math.max(left.peak,right.peak);const decision=protectionDecision({peak,safetyGain:engine.safety.gain.value,strikes:engine.meters.strikes,nonFinite:left.nonFinite+right.nonFinite});engine.meters.strikes=decision.strikes;engine.meters.outputPeak=peak;engine.meters.inputPeak=input.peak;engine.meters.reduction=engine.compress.reduction||0;engine.meters.protection=decision.action==='duck'||decision.action==='stop';if(decision.action==='duck')param(engine.safety.gain,decision.safetyGain,engine.ctx,.05);if(decision.action==='clear'&&engine.safety.gain.value<1)param(engine.safety.gain,decision.safetyGain,engine.ctx,.5);if(decision.action==='stop'&&!engine.meters.protectionStop){engine.meters.protectionStop=true;engine.safety.gain.value=decision.safetyGain;endPlayback(false,'error');return}const db=peak>1e-5?20*Math.log10(peak):-90;meter.textContent=`输出峰值 ${db.toFixed(1)} dBFS · 压缩衰减 ${Math.abs(engine.meters.reduction).toFixed(1)} dB${engine.meters.protection?' · 输出保护已压低增益':''} · 不是声压级`;meter.classList.toggle('meter-alert',engine.meters.protection)}
 function startProtectionMonitor(){stopProtectionMonitor();protectionTimer=setInterval(monitorOutput,100);monitorOutput()}
 function stopProtectionMonitor(){clearInterval(protectionTimer);protectionTimer=0;const meter=$('outputMeter');if(meter){meter.textContent='滑杆是数字增益，不是声压级。未校准的耳机无法保证实际响度。';meter.classList.remove('meter-alert')}}
-function drawFilterPlot(canvas,track){const rect=canvas.getBoundingClientRect(),dpr=Math.min(2,devicePixelRatio||1),w=Math.max(120,Math.floor((rect.width||280)*dpr)),h=Math.max(70,Math.floor((rect.height||88)*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}const g=canvas.getContext('2d');g.clearRect(0,0,w,h);const type=track.kind==='band'?'bandpass':'notch';const sampleRate=audioContext?.sampleRate||44100;const points=responseCurve(type,track.freq,track.bw,sampleRate);const minDb=-48,maxDb=12;const xOf=f=>8*dpr+(w-16*dpr)*(Math.log(f)-Math.log(80))/(Math.log(14000)-Math.log(80));const yOf=db=>8*dpr+(h-18*dpr)*(1-(Math.max(minDb,Math.min(maxDb,db))-minDb)/(maxDb-minDb));g.strokeStyle='#e7e8dd';g.lineWidth=dpr;for(const db of [0,-12,-24,-36]){const y=yOf(db);g.beginPath();g.moveTo(8*dpr,y);g.lineTo(w-8*dpr,y);g.stroke()}g.beginPath();points.forEach((p,i)=>{const x=xOf(p.f),y=yOf(p.db);i?g.lineTo(x,y):g.moveTo(x,y)});g.strokeStyle='#1a8380';g.lineWidth=1.8*dpr;g.stroke();const cx=xOf(track.freq);g.strokeStyle='#d296a2';g.beginPath();g.moveTo(cx,6*dpr);g.lineTo(cx,h-10*dpr);g.stroke();const measured=measureFilter({type,freq:track.freq,bw:track.bw,sampleRate});g.fillStyle='#829691';g.font=`${10*dpr}px system-ui`;g.fillText(measured.reliable?`${type==='notch'?'陷波':'带通'} · 计算带宽 ${measured.bandwidthOct.toFixed(2)} oct`:`${type==='notch'?'陷波':'带通'} · 接近奈奎斯特，带宽仅供参考`,8*dpr,h-3*dpr)}
+function drawFilterPlot(canvas,track){
+  const rect=canvas.getBoundingClientRect();
+  const dpr=Math.min(2,devicePixelRatio||1);
+  const w=Math.max(120,Math.floor((rect.width||280)*dpr));
+  const h=Math.max(70,Math.floor((rect.height||88)*dpr));
+  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
+  const g=canvas.getContext('2d');
+  g.clearRect(0,0,w,h);
+  const type=track.kind==='band'?'bandpass':'notch';
+  const sampleRate=audioContext?.sampleRate||44100;
+  const points=responseCurve(type,track.freq,track.bw,sampleRate);
+  const minDb=-48,maxDb=12;
+  const logMin=Math.log(80),logMax=Math.log(14000);
+  const xOf=f=>8*dpr+(w-16*dpr)*(Math.log(f)-logMin)/(logMax-logMin);
+  const yOf=db=>8*dpr+(h-18*dpr)*(1-(Math.max(minDb,Math.min(maxDb,db))-minDb)/(maxDb-minDb));
+  g.strokeStyle=palette.line;
+  g.lineWidth=dpr;
+  for(const db of [0,-12,-24,-36]){
+    const y=yOf(db);
+    g.beginPath();
+    g.moveTo(8*dpr,y);
+    g.lineTo(w-8*dpr,y);
+    g.stroke();
+  }
+  g.beginPath();
+  points.forEach((p,i)=>{
+    const x=xOf(p.f),y=yOf(p.db);
+    if(i)g.lineTo(x,y);else g.moveTo(x,y);
+  });
+  g.strokeStyle=palette.accent;
+  g.lineWidth=1.8*dpr;
+  g.stroke();
+  const cx=xOf(track.freq);
+  g.strokeStyle=palette.teal;
+  g.beginPath();
+  g.moveTo(cx,6*dpr);
+  g.lineTo(cx,h-10*dpr);
+  g.stroke();
+  const measured=measureFilter({type,freq:track.freq,bw:track.bw,sampleRate});
+  const shape=type==='notch'?'陷波':'带通';
+  const label=measured.reliable
+    ?`${shape} · 计算带宽 ${measured.bandwidthOct.toFixed(2)} oct`
+    :`${shape} · 接近奈奎斯特，带宽仅供参考`;
+  g.fillStyle=palette.text3;
+  g.font=`${10*dpr}px system-ui`;
+  g.fillText(label,8*dpr,h-3*dpr);
+}
 function drawFilterPlots(){for(const canvas of $$('[data-filter-plot]')){const card=canvas.closest('[data-track]');const t=settings.tracks.find(x=>x.id===card?.dataset.track);if(t)drawFilterPlot(canvas,t)}}
 function download(blob,name){const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),10000)}
-async function exportWav(sec){if(exporting)return;const mobile=matchMedia('(pointer: coarse)').matches||/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);const allowance=exportAllowance(sec,{deviceMemory:navigator.deviceMemory||8,mobile});if(!allowance.ok){notify(allowance.reason);return}if(!settings.tracks.some(eligible)){notify('没有可用的声音轨道');return}const O=window.OfflineAudioContext||window.webkitOfflineAudioContext;if(!O){notify('浏览器不支持离线导出');return}exporting=true;const button=$('exportWav');button.disabled=true;button.textContent='导出中…';try{const sr=44100,ctx=new O(2,sr*sec,sr),graph=buildGraph(ctx);voicesBuild(graph,true);const fade=Math.min(settings.fadeIn,sec/3),tail=Math.min(settings.fadeOut,sec/3),volume=masterGain();graph.master.gain.setValueAtTime(fade?0:volume,0);if(fade)graph.master.gain.linearRampToValueAtTime(volume,fade);graph.master.gain.setValueAtTime(volume,Math.max(fade,sec-tail));if(tail)graph.master.gain.linearRampToValueAtTime(0,sec);const steps=Math.max(1,Math.round(sec/5));for(let i=1;i<steps;i++)ctx.suspend(sec*i/steps).then(()=>{button.textContent=`导出中 ${Math.round(100*i/steps)}%`;return ctx.resume()});const rendered=await ctx.startRendering();const left=rendered.getChannelData(0),right=rendered.getChannelData(1);const analysis=analyzeChannels([left,right],sr);const verdict=assessExport(analysis);if(!verdict.ok)throw new Error(verdict.reason);const blob=new Blob([encodeWav(left,right,sr)],{type:'audio/wav'});download(blob,`Tinglan-Mix-v4.1-${sec}s.wav`);notify(`已导出混音（${(blob.size/1048576).toFixed(1)} MB，峰值 ${(20*Math.log10(Math.max(analysis.peak,1e-8))).toFixed(1)} dBFS）`)}catch(err){notify('导出失败：'+err.message)}finally{exporting=false;button.disabled=false;button.textContent='↓ 导出混音 WAV'}}
+async function exportWav(sec){if(exporting)return;const mobile=matchMedia('(pointer: coarse)').matches||/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);const allowance=exportAllowance(sec,{deviceMemory:navigator.deviceMemory||8,mobile});if(!allowance.ok){notify(allowance.reason);return}if(!settings.tracks.some(eligible)){notify('没有可用的声音轨道');return}const O=window.OfflineAudioContext||window.webkitOfflineAudioContext;if(!O){notify('浏览器不支持离线导出');return}exporting=true;const button=$('exportWav');button.disabled=true;button.textContent='导出中…';try{const sr=44100,ctx=new O(2,sr*sec,sr),graph=buildGraph(ctx);voicesBuild(graph,true);const fade=Math.min(settings.fadeIn,sec/3),tail=Math.min(settings.fadeOut,sec/3),volume=masterGain();graph.master.gain.setValueAtTime(fade?0:volume,0);if(fade)graph.master.gain.linearRampToValueAtTime(volume,fade);graph.master.gain.setValueAtTime(volume,Math.max(fade,sec-tail));if(tail)graph.master.gain.linearRampToValueAtTime(0,sec);const steps=Math.max(1,Math.round(sec/5));for(let i=1;i<steps;i++)ctx.suspend(sec*i/steps).then(()=>{button.textContent=`导出中 ${Math.round(100*i/steps)}%`;return ctx.resume()});const rendered=await ctx.startRendering();const left=rendered.getChannelData(0),right=rendered.getChannelData(1);const analysis=analyzeChannels([left,right],sr);const verdict=assessExport(analysis);if(!verdict.ok)throw new Error(verdict.reason);const blob=new Blob([encodeWav(left,right,sr)],{type:'audio/wav'});download(blob,`Tinglan-Mix-v4.1-${sec}s.wav`);notify(`已导出混音（${(blob.size/1048576).toFixed(1)} MB，峰值 ${(20*Math.log10(Math.max(analysis.peak,1e-8))).toFixed(1)} dBFS）`)}catch(err){notify('导出失败：'+err.message)}finally{exporting=false;button.disabled=false;button.textContent='导出混音 WAV'}}
 function wavDialog(){openDialog('导出混音 WAV',`<div class="dialog-body"><label>导出时长<select id="wavSeconds"><option value="10">10秒（快速试听）</option><option value="30">30秒</option><option value="60">60秒</option><option value="120">120秒</option></select></label><p class="dialog-info">导出使用与播放相同的滤波、声相、压缩和峰值保护，格式为 44.1 kHz / 16-bit / 双声道。检测到削波时会取消导出，而不是悄悄截断。输出不是声压级，试听前先调低设备音量。内存较小的设备会限制时长。</p></div>`,[{text:'取消',fn:closeDialog},{text:'开始导出',primary:true,fn:()=>{const n=Number($('wavSeconds').value);closeDialog();exportWav(n)}}])}
 function backup(){const obj={version:4,app:APP_VERSION,savedAt:new Date().toISOString(),settings,profiles,logs,sessions,favorites,person,note:'本地音频文件本身不会包含在备份中。播放时长是确认出声时间。'};download(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),'Tinglan-v4-backup.json')}
 async function importBackup(file){if(!file)return;try{if(file.size>8e6)throw Error('备份文件大于 8MB');const d=JSON.parse(await file.text());const result=validateBackup(d);if(!result.ok)throw Error(result.errors[0]);if(!confirm('确定导入备份？这会覆盖本机已有的混音设置与记录。'))return;await stop(true);const data=result.data;settings={...fallback,...data.settings,tracks:data.settings.tracks.map(validTrack)};profiles=data.profiles;logs=data.logs.map(x=>({...x,id:x.id||uid()}));sessions=data.sessions.map(x=>({...x,id:x.id||uid()}));favorites=data.favorites;person=data.person;files.clear();elapsed=0;if(idbOk&&dbPromise){try{await idbReplace(await dbPromise,logs,sessions);recordChannel?.postMessage({type:'records-changed'})}catch{notify('记录写入数据库失败，已保留在内存中')}}persistNow();renderQuick();renderTracks();renderStats();setPage('home');notify(result.dropped?`备份已恢复，跳过了 ${result.dropped} 条无法校验的记录`:'备份已恢复，本地上传音频需要重新选择')}catch(e){notify('导入失败：'+e.message)}finally{$('importBackup').value=''}}
@@ -126,13 +552,36 @@ function playbackSettingsDialog(){setPage('home');setTimeout(()=>$('masterVolume
 function fileDialog(){openDialog('我的耳鸣档案',`<div class="dialog-body"><p class="dialog-info">以下信息只保存在当前浏览器，不会上传到服务器。可用于就诊时回顾情况。</p><label>耳鸣匹配频率（自述）<input id="tinnFreq" maxlength="60" value="${safe(person.tinnitus||'')}" placeholder="例如 双侧4000 Hz"></label><label>当前入睡情况（自述）<input id="sleepPref" maxlength="80" value="${safe(person.sleepPreference||'')}" placeholder="例如 入睡需要1–2小时"></label><label>其他备注<textarea id="tinnNote" maxlength="500">${safe(person.note||'',500)}</textarea></label></div>`,[{text:'取消',fn:closeDialog},{text:'保存档案',primary:true,fn:()=>{person.tinnitus=$('tinnFreq').value.slice(0,60);person.sleepPreference=$('sleepPref').value.slice(0,80);person.note=$('tinnNote').value.slice(0,500);persist();closeDialog();notify('耳鸣档案已保存在本机')}}])}
 // Event wiring
 $$('.tab').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.page)));
-document.addEventListener('click',e=>{const preset=e.target.closest('[data-preset]');if(preset){applyPreset(preset.dataset.preset);return}const pg=e.target.closest('[data-page-link]');if(pg){setPage(pg.dataset.pageLink);return}const fav=e.target.closest('[data-favorite]');if(fav){const id=fav.dataset.favorite;favorites=favorites.includes(id)?favorites.filter(x=>x!==id):[...favorites,id];persist();renderPresets();return}const ct=e.target.closest('[data-category]');if(ct){selectedCategory=ct.dataset.category;renderPresets();return}const custom=e.target.closest('[data-custom-load]');if(custom){loadCustom(custom.dataset.customLoad);return}const del=e.target.closest('[data-custom-delete]');if(del){const name=del.dataset.customDelete;if(confirm(`确定删除“${name}”吗？`)){delete profiles[name];persist();renderPresets()}return}const logDel=e.target.closest('[data-delete-log]');if(logDel){if(confirm('确定删除这条自评记录吗？')){const removed=logDel.dataset.deleteLog;logs=logs.filter(x=>x.id!==removed);deleteRecord('logs',removed);persist();renderRecords();renderStats()}return}const action=e.target.closest('[data-action]');if(action){const a=action.dataset.action;if(a==='openJournal')openJournal();if(a==='newMix'){stop(true);settings.tracks=[track('pink',27)];settings.activeName='未命名混音';settings.activeId='custom';elapsed=0;files.clear();renderTracks();renderQuick();setPage('home')}if(a==='playbackSettings')playbackSettingsDialog();if(a==='tinnitusFile')fileDialog();if(a==='exportBackup')backup();if(a==='help')aboutDialog();if(a==='clearData'&&confirm('确定清除全部本机记录和个人方案吗？此操作无法撤销，建议先导出备份。')){if(confirm('再次确认：真的要删除所有个人数据吗？')){stop(true);localStorage.removeItem(KEY);profiles={};logs=[];sessions=[];favorites=[];person={name:'听澜用户',tinnitus:'',sleepPreference:'',note:''};settings={...fallback,tracks:tracksFor(PRESETS[0])};if(idbOk&&dbPromise)dbPromise.then(db=>idbReplace(db,[],[]).then(()=>Promise.all([idbDeleteKey(db,'logs'),idbDeleteKey(db,'sessions')]))).then(()=>recordChannel?.postMessage({type:'records-changed'})).catch(()=>{});persistNow();renderQuick();renderTracks();renderStats();renderMe();notify('已清除本地个人记录')}}return}});
+document.addEventListener('click',e=>{lastTrigger=e.target.closest('button,label,a')||lastTrigger;const preset=e.target.closest('[data-preset]');if(preset){applyPreset(preset.dataset.preset);return}const pg=e.target.closest('[data-page-link]');if(pg){setPage(pg.dataset.pageLink);return}const fav=e.target.closest('[data-favorite]');if(fav){const id=fav.dataset.favorite;favorites=favorites.includes(id)?favorites.filter(x=>x!==id):[...favorites,id];persist();renderPresets();return}const ct=e.target.closest('[data-category]');if(ct){selectedCategory=ct.dataset.category;renderPresets();return}const custom=e.target.closest('[data-custom-load]');if(custom){loadCustom(custom.dataset.customLoad);return}const del=e.target.closest('[data-custom-delete]');if(del){const name=del.dataset.customDelete;if(confirm(`确定删除“${name}”吗？`)){delete profiles[name];persist();renderPresets()}return}const logDel=e.target.closest('[data-delete-log]');if(logDel){if(confirm('确定删除这条自评记录吗？')){const removed=logDel.dataset.deleteLog;logs=logs.filter(x=>x.id!==removed);deleteRecord('logs',removed);persist();renderRecords();renderStats()}return}const action=e.target.closest('[data-action]');if(action){const a=action.dataset.action;if(a==='openJournal')openJournal();if(a==='newMix'){stop(true);settings.tracks=[track('pink',27)];settings.activeName='未命名混音';settings.activeId='custom';elapsed=0;files.clear();renderTracks();renderQuick();setPage('home')}if(a==='playbackSettings')playbackSettingsDialog();if(a==='tinnitusFile')fileDialog();if(a==='exportBackup')backup();if(a==='help')aboutDialog();if(a==='clearData'&&confirm('确定清除全部本机记录和个人方案吗？此操作无法撤销，建议先导出备份。')){if(confirm('再次确认：真的要删除所有个人数据吗？')){stop(true);localStorage.removeItem(KEY);profiles={};logs=[];sessions=[];favorites=[];person={name:'听澜用户',tinnitus:'',sleepPreference:'',note:''};settings={...fallback,tracks:tracksFor(PRESETS[0])};if(idbOk&&dbPromise)dbPromise.then(db=>idbReplace(db,[],[]).then(()=>Promise.all([idbDeleteKey(db,'logs'),idbDeleteKey(db,'sessions')]))).then(()=>recordChannel?.postMessage({type:'records-changed'})).catch(()=>{});persistNow();renderQuick();renderTracks();renderStats();renderMe();notify('已清除本地个人记录')}}return}});
 $('playBtn').addEventListener('click',()=>playerState==='PLAYING'?pausePlayback():startPlayback());$('discomfortBtn').addEventListener('click',()=>endPlayback(false,'discomfort'));$('stopBtn').addEventListener('click',()=>stop());$('addTrack').addEventListener('click',()=>{if(settings.tracks.length>=6)return notify('最多允许6条音轨');settings.tracks.push(track('pink',25));settings.activeName='自定义混音';settings.activeId='custom';const created=settings.tracks.at(-1);renderTracks();renderQuick();if(engine&&['PLAYING','PAUSED','PAUSING'].includes(playerState)){const v=makeVoice(engine,created);if(v){engine.voices.set(created.id,v);param(v.gain.gain,trackGain(created),engine.ctx,.22);changeGains()}}noteParam('tracks',settings.tracks.map(item=>item.kind))});$('saveMix').addEventListener('click',saveProfile);$('exportWav').addEventListener('click',wavDialog);$('topHelp').addEventListener('click',aboutDialog);
 $('duration').addEventListener('change',e=>{settings.duration=clamp(e.target.value,15,90);noteParam('duration',settings.duration);if(elapsed>settings.duration*60)stop();readSettingsToUI();persist()});for(let id of ['fadeIn','fadeOut'])$(id).addEventListener('change',e=>{settings[id]=clamp(e.target.value,0,10);noteParam(id,settings[id]);persist()});$('masterVolume').addEventListener('input',e=>{settings.volume=clamp(e.target.value,0,100);if(engine)param(engine.master.gain,playerState==='PLAYING'?masterGain():0,engine.ctx,.15);readSettingsToUI();persist()});$('masterVolume').addEventListener('change',()=>noteParam('volume',settings.volume));
 $('trackList').addEventListener('click',e=>{const btn=e.target.closest('[data-track-action]');if(!btn)return;const card=btn.closest('[data-track]'),t=settings.tracks.find(x=>x.id===card?.dataset.track);if(!t)return;const a=btn.dataset.trackAction;if(a==='mute'){t.mute=!t.mute;changeGains()}if(a==='solo'){t.solo=!t.solo;changeGains()}if(a==='remove'){if(settings.tracks.length===1)return notify('请至少保留一条轨道');if(engine){const v=engine.voices.get(t.id);if(v){engine.voices.delete(t.id);param(v.gain.gain,0,engine.ctx,.12);setTimeout(()=>v.stop(),200)}}settings.tracks=settings.tracks.filter(x=>x.id!==t.id);files.delete(t.id);changeGains()}if(a==='duplicate'){if(settings.tracks.length>=6)return notify('最多允许6条轨道');const copy={...t,id:uid(),fileName:''};if(copy.kind==='file')copy.kind='pink';settings.tracks.push(copy);if(engine){const v=makeVoice(engine,copy);if(v){engine.voices.set(copy.id,v);param(v.gain.gain,trackGain(copy),engine.ctx,.22);changeGains()}}}settings.activeName='自定义混音';settings.activeId='custom';noteParam('track.'+t.id+'.'+a,{mute:t.mute,solo:t.solo,kind:t.kind});renderTracks();renderQuick()});
 $('trackList').addEventListener('input',e=>{let control=e.target,prop=control.dataset.prop;if(!prop||prop==='kind')return;const card=control.closest('[data-track]'),t=settings.tracks.find(x=>x.id===card?.dataset.track);if(!t)return;const limits={level:[0,100],pan:[-100,100],freq:[250,8000],bw:[.2,3],cutoff:[1000,14000]};if(!limits[prop])return;t[prop]=clamp(control.value,...limits[prop]);changeTrack(t,prop);const label=card.querySelector(`[data-label="${prop}"]`);if(label)label.textContent=prop==='pan'?(t.pan===0?'C':t.pan):pct(t.level);settings.activeName='自定义混音';settings.activeId='custom';readSettingsToUI();persist()});
 $('trackList').addEventListener('change',e=>{const card=e.target.closest('[data-track]'),t=settings.tracks.find(x=>x.id===card?.dataset.track);if(!t)return;if(e.target.dataset.prop==='kind'){let kind=e.target.value;if(!TYPES[kind])return;t.kind=kind;t.fileName='';files.delete(t.id);changeTrack(t,'kind');noteParam('track.'+t.id+'.kind',kind);settings.activeName='自定义混音';settings.activeId='custom';renderTracks();renderQuick()}if(e.target.dataset.file==='1')handleLocalFile(t,e.target.files[0]);if(['level','pan','freq','bw','cutoff'].includes(e.target.dataset.prop)){if(['freq','bw','cutoff'].includes(e.target.dataset.prop))e.target.value=t[e.target.dataset.prop];noteParam('track.'+t.id+'.'+e.target.dataset.prop,t[e.target.dataset.prop]);drawFilterPlots();persist()}});
-$('presetSearch').addEventListener('input',e=>{search=e.target.value.trim().slice(0,70);renderPresets()});$('resetFilter').addEventListener('click',()=>{search='';selectedCategory='全部';$('presetSearch').value='';renderPresets()});$('trendSegments').addEventListener('click',e=>{const b=e.target.closest('[data-days]');if(b){trendDays=Number(b.dataset.days);renderRecords()}});$('exportCsv').addEventListener('click',()=>{download(new Blob([recordsToCsv(sessions,logs)],{type:'text/csv;charset=utf-8'}),'Tinglan-v4-records.csv');notify('已导出 CSV')});$('importBackup').addEventListener('change',e=>importBackup(e.target.files[0]));$('editName').addEventListener('click',()=>{openDialog('编辑昵称',`<div class="dialog-body"><label>昵称<input id="nameInput" maxlength="20" value="${safe(person.name||'听澜用户')}" placeholder="你的昵称"></label><p class="helper-text">仅保存在你的浏览器里。</p></div>`,[{text:'取消',fn:closeDialog},{text:'保存',primary:true,fn:()=>{person.name=$('nameInput').value.trim().slice(0,20)||'听澜用户';persist();renderMe();closeDialog()}}])});$('dialogClose').addEventListener('click',closeDialog);$('overlay').addEventListener('click',e=>{if(e.target===$('overlay'))closeDialog()});window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('overlay').hidden)closeDialog()});
+$('presetSearch').addEventListener('input',e=>{search=e.target.value.trim().slice(0,70);renderPresets()});
+$('resetFilter').addEventListener('click',()=>{search='';selectedCategory='全部';$('presetSearch').value='';renderPresets()});
+$('trendSegments').addEventListener('click',e=>{
+  const b=e.target.closest('[data-seg]');
+  if(!b)return;
+  recordTab=b.dataset.seg;
+  renderRecords();
+});
+$('rangeSegments').addEventListener('click',e=>{
+  const b=e.target.closest('[data-days]');
+  if(!b)return;
+  trendDays=Number(b.dataset.days)||7;
+  renderRecords();
+});
+$('openMixer').addEventListener('click',()=>setPage('mixer'));
+$('backHome').addEventListener('click',()=>setPage('home'));
+['themeBtn','themeBtn2'].forEach(id=>{
+  const el=$(id);
+  if(el)el.addEventListener('click',()=>applyTheme(theme==='night'?'day':'night'));
+});
+$('exportCsv').addEventListener('click',()=>{
+  download(new Blob([recordsToCsv(sessions,logs)],{type:'text/csv;charset=utf-8'}),'Tinglan-v4-records.csv');
+  notify('已导出 CSV');
+});$('importBackup').addEventListener('change',e=>importBackup(e.target.files[0]));$('editName').addEventListener('click',()=>{openDialog('编辑昵称',`<div class="dialog-body"><label>昵称<input id="nameInput" maxlength="20" value="${safe(person.name||'听澜用户')}" placeholder="你的昵称"></label><p class="helper-text">仅保存在你的浏览器里。</p></div>`,[{text:'取消',fn:closeDialog},{text:'保存',primary:true,fn:()=>{person.name=$('nameInput').value.trim().slice(0,20)||'听澜用户';persist();renderMe();closeDialog()}}])});$('dialogClose').addEventListener('click',closeDialog);$('overlay').addEventListener('click',e=>{if(e.target===$('overlay'))closeDialog()});window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('overlay').hidden)closeDialog()});
 const canv=$('spectrum');let spectrumW=10,spectrumH=10;
 
 function resizeSpectrum(){
@@ -151,7 +600,52 @@ function queueSpectrum(){
 
 function drawSpectrum(){
   if(spectrumDirty){resizeSpectrum();spectrumDirty=false}
-  const c=canv.getContext('2d'),dpr=Math.min(2,window.devicePixelRatio||1),w=spectrumW,h=spectrumH;c.clearRect(0,0,w,h);const x0=5*dpr,x1=w-5*dpr,mid=h*.56;for(let i=0;i<=5;i++){let y=i*h/5;c.strokeStyle='#e4eae4';c.lineWidth=dpr*.6;c.beginPath();c.moveTo(0,y);c.lineTo(w,y);c.stroke()}let values=[];if((playerState==='PLAYING'||playerState==='PAUSING')&&engine?.analyser){const a=engine.analyser,data=new Uint8Array(a.frequencyBinCount);a.getByteFrequencyData(data);for(let i=0;i<145;i++){const f=100*Math.pow(90,i/144),idx=Math.min(data.length-1,Math.round(f*a.fftSize/engine.ctx.sampleRate));values.push((data[idx]||0)/255)}}else for(let i=0;i<145;i++){const env=Math.abs(Math.sin(i*.083)+.45*Math.sin(i*.211+1.5)+.25*Math.sin(i*.41));values.push((.2+.45*env)*(i/145*.5+.6))}const grad=c.createLinearGradient(0,0,0,h);grad.addColorStop(0,'#76c4bda1');grad.addColorStop(1,'#76c4bd08');c.beginPath();c.moveTo(x0,h*.9);values.forEach((v,i)=>{const x=x0+(x1-x0)*i/144,y=h*.86-v*h*.68;c.lineTo(x,y)});c.lineTo(x1,h*.9);c.closePath();c.fillStyle=grad;c.fill();c.beginPath();values.forEach((v,i)=>{const x=x0+(x1-x0)*i/144,y=h*.86-v*h*.68;i?c.lineTo(x,y):c.moveTo(x,y)});c.strokeStyle='#1a8380';c.lineWidth=2*dpr;c.stroke();for(let i=0;i<70;i++){const idx=i*2,x=x0+(x1-x0)*idx/144,v=values[idx]||0;c.beginPath();c.moveTo(x,h*.89);c.lineTo(x,h*.89-v*h*.47);c.strokeStyle='#84c9c4a1';c.lineWidth=1*dpr;c.stroke()}spectrumFrame=0;queueSpectrum()}
+  const c=canv.getContext('2d');
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  const w=spectrumW,h=spectrumH;
+  c.clearRect(0,0,w,h);
+  const live=playerState==='PLAYING'||playerState==='PAUSING';
+  const bars=48;
+  const values=[];
+  if(live&&engine?.analyser){
+    const a=engine.analyser,data=new Uint8Array(a.frequencyBinCount);
+    a.getByteFrequencyData(data);
+    for(let i=0;i<bars;i++){
+      const f=90*Math.pow(110,i/(bars-1));
+      const idx=Math.min(data.length-1,Math.round(f*a.fftSize/engine.ctx.sampleRate));
+      values.push((data[idx]||0)/255);
+    }
+  }else{
+    for(let i=0;i<bars;i++){
+      const t=i/(bars-1);
+      const env=Math.abs(Math.sin(i*.33+.7)+.45*Math.sin(i*.13+1.4));
+      values.push((.18+.42*env)*(.55+.45*Math.cos((t-.5)*Math.PI)));
+    }
+  }
+  const gap=4*dpr;
+  const bw=Math.max(2*dpr,(w-bars*gap)/bars);
+  const trackW=bars*bw+(bars-1)*gap;
+  const left=(w-trackW)/2;
+  const base=h-2*dpr;
+  const grad=c.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,palette.accent+'e6');
+  grad.addColorStop(1,palette.accent+'3d');
+  c.fillStyle=grad;
+  for(let i=0;i<bars;i++){
+    const t=i/(bars-1);
+    const env=.58+.42*Math.cos((t-.5)*Math.PI*1.05);
+    const amp=Math.max(.05,values[i])*env;
+    const bh=Math.max(2*dpr,amp*h*.92);
+    const x=left+i*(bw+gap);
+    const r=Math.min(bw/2,3*dpr);
+    c.beginPath();
+    if(c.roundRect)c.roundRect(x,base-bh,bw,bh,r);
+    else c.rect(x,base-bh,bw,bh);
+    c.fill();
+  }
+  spectrumFrame=0;
+  queueSpectrum();
+}
 window.addEventListener('resize',()=>{spectrumDirty=true;if(page==='records')drawTrend();drawFilterPlots();queueSpectrum()});
 if('ResizeObserver' in window)new ResizeObserver(()=>{spectrumDirty=true;queueSpectrum()}).observe(canv);
 document.addEventListener('visibilitychange',()=>{
@@ -171,5 +665,10 @@ window.addEventListener('pageshow',e=>{
   spectrumDirty=true;
   queueSpectrum();
 });
-renderQuick();renderTracks();renderStats();renderPresets();readSettingsToUI();setPage('home');setInterval(()=>{if(playerState==='PLAYING'||playerState==='PAUSING')updateClock()},400);queueSpectrum();bootRecords();
+applyTheme(localStorage.getItem(THEME_KEY)==='day'?'day':'night',false);
+const today=new Date();
+$('tonightDate').textContent=`${today.getMonth()+1} 月 ${today.getDate()} 日 · 周${'日一二三四五六'[today.getDay()]}`;
+renderQuick();renderTracks();renderStats();renderPresets();readSettingsToUI();setPage('home');
+setInterval(()=>{if(playerState==='PLAYING'||playerState==='PAUSING')updateClock()},400);
+queueSpectrum();bootRecords();
 })();
